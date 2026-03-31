@@ -1,0 +1,286 @@
+# Z++ CRYPTO PAYMENT GATEWAY - COMPLETE SYSTEM DESCRIPTION
+
+## OVERVIEW
+
+A multi-chain crypto payment gateway built on MERN stack (.jsx), using web node APIs (no full nodes), supporting Ethereum, BNB, Polygon, Avalanche, Tron, Solana, Bitcoin, and XRP. The system enables merchants to accept payments in multiple tokens while settling in USDT TRC20, with high security, scalability, and enterprise-grade architecture.
+
+---
+
+## CORE ARCHITECTURE
+
+### 1. SYSTEM DESIGN
+
+* Microservices-based architecture (no monolith)
+* Services:
+
+  * API Server (Auth, Merchant, User, Admin)
+  * Payment Processor
+  * Blockchain Listener
+  * Withdrawal Engine
+  * Sweep Engine
+  * Dispute System
+  * Notification/Webhook Service
+* Queue system (Redis/Kafka) for async operations
+* Stateless services for horizontal scalability
+
+---
+
+### 2. WALLET MANAGEMENT
+
+* Admin adds child wallet addresses per chain/network
+* Private keys NEVER stored in plain format
+* Encryption:
+
+  * AES-256 encrypted private keys
+  * Master key stored in ENV (separate from DB)
+* Key isolation:
+
+  * DB stores encrypted keys
+  * Server handles decryption only when required
+* Wallet strategy:
+
+  * Child wallets receive deposits
+  * Auto-transfer to main wallet when threshold reached
+  * Max balance limit per child wallet
+* Gas management:
+
+  * Native token balance tracking per wallet
+  * Auto top-up system for gas fees
+
+---
+
+### 3. PAYMENT FLOW
+
+1. Merchant creates invoice (USDT value only)
+2. Supported tokens displayed to user
+3. Unique deposit amount generated (per invoice)
+4. User sends payment to shared wallet address
+5. Blockchain listener detects transaction via APIs
+6. Matching engine validates:
+
+   * Amount (unique match)
+   * Address
+   * Chain
+   * Timestamp window
+7. Transaction lifecycle:
+
+   * initiated
+   * pending
+   * hash_found
+   * confirmed
+   * success / failed / invalid
+
+---
+
+### 4. TRANSACTION MATCHING ENGINE
+
+* Uses:
+
+  * Unique amount logic
+  * Address mapping
+  * Time window validation
+* Handles:
+
+  * Partial payments
+  * Overpayments
+  * Late transactions
+* Prevents:
+
+  * Duplicate matching
+  * Replay attacks
+
+---
+
+### 5. INTERNAL LEDGER SYSTEM
+
+* Separate from blockchain data
+* Double-entry accounting model
+* Ensures:
+
+  * Balance consistency
+  * Accurate refunds
+  * Audit capability
+* Every transaction recorded immutably
+
+---
+
+### 6. AUTO SWEEP SYSTEM
+
+* Converts incoming tokens to USDT TRC20
+* Uses third-party provider APIs
+* Admin controls:
+
+  * Provider selection
+  * Fees and charges
+* Charges included internally (hidden from user)
+* Merchant sees full breakdown
+
+---
+
+### 7. WITHDRAWAL SYSTEM
+
+* Automated withdrawal to merchant TRC20 wallet
+* Configurable:
+
+  * Time interval
+  * Minimum threshold
+  * Fees
+* Flow:
+
+  * Request → Queue → Validation → Signing → Broadcast
+* Security:
+
+  * Rate limiting
+  * Manual approval for high-risk withdrawals
+  * Cooldown delays
+
+---
+
+### 8. API SYSTEM (FOR MERCHANTS)
+
+* REST API for:
+
+  * Invoice creation
+  * Payment tracking
+  * Transaction status
+* Webhook system:
+
+  * Signed payloads (HMAC)
+  * Retry mechanism
+  * Event logging
+* Idempotency keys required for all requests
+
+---
+
+### 9. SECURITY FRAMEWORK
+
+#### Key Security
+
+* No plaintext private keys
+* Encrypted storage (AES-256)
+* Key usage only during signing
+* Optional key sharding
+
+#### API Security
+
+* HMAC signature validation
+* Nonce + timestamp validation
+* Rate limiting (per IP + API key)
+
+#### System Security
+
+* Role-based access control (RBAC)
+* Admin privilege isolation
+* Audit logs (append-only)
+* Input validation and sanitization
+
+---
+
+### 10. BLOCKCHAIN INFRASTRUCTURE
+
+* Uses multiple web API providers per chain
+* Fallback system for redundancy
+* Handles:
+
+  * API failures
+  * Chain re-orgs
+* Confirmation tracking per chain
+
+---
+
+### 11. DISPUTE & REFUND SYSTEM
+
+* Users can:
+
+  * Report fraud
+  * Raise disputes
+* Funds marked as "disputed"
+* Auto-withdrawal paused for disputed funds
+* Admin controls:
+
+  * Refund approval
+  * Merchant/user response deadlines
+* Refunds sent to original wallet
+
+---
+
+### 12. FRAUD PREVENTION
+
+* Velocity limits (transaction frequency)
+* Wallet risk scoring
+* Blacklist/whitelist system
+* IP and geo anomaly detection
+
+---
+
+### 13. GAS & FEE MANAGEMENT
+
+* Tracks native token balances per chain
+* Auto-refill mechanism
+* Fee estimation before transaction execution
+
+---
+
+### 14. LOGGING & MONITORING
+
+* All actions logged:
+
+  * Transactions
+  * Withdrawals
+  * Admin operations
+* Immutable logs (no modification)
+* Real-time alerts for:
+
+  * Failures
+  * Low balances
+  * Suspicious activity
+
+---
+
+### 15. DATABASE DESIGN (MONGODB)
+
+* Uses transactions (ACID where required)
+* Collections:
+
+  * users
+  * merchants
+  * wallets
+  * transactions
+  * ledger
+  * withdrawals
+  * disputes
+* Indexing for performance
+* No sensitive data stored unencrypted
+
+---
+
+### 16. SCALABILITY
+
+* Horizontal scaling (stateless services)
+* Load balancers
+* Queue-based async processing
+* Modular service expansion
+
+---
+
+### 17. BACKUP & RECOVERY
+
+* Regular encrypted backups
+* Disaster recovery plan
+* Key recovery mechanism
+* Rollback capability for DB
+
+---
+
+### 18. LIMITATIONS & INITIAL STRATEGY
+
+* Start with limited chains (2–3)
+* Disable auto-sweep initially for stability
+* Gradually scale infrastructure
+* Strict merchant onboarding
+
+---
+
+## END GOAL
+
+A highly secure, scalable, multi-chain crypto payment gateway with enterprise-grade architecture, ensuring zero compromise on security, accurate accounting, and reliable transaction processing.
