@@ -1,0 +1,423 @@
+# XCOINGATEWAY — TESTING & SECURITY VALIDATION PROTOCOL
+# Source of truth for all testing, security audits, and quality assurance
+# Every test must PASS before any feature moves to production
+
+---
+
+## TESTING PHILOSOPHY
+
+NO FEATURE IS COMPLETE UNTIL IT IS TESTED.
+NO TEST IS COMPLETE UNTIL EDGE CASES ARE COVERED.
+NO DEPLOYMENT IS ALLOWED UNTIL ALL TESTS PASS.
+
+If a test seems unnecessary — it's probably the most important one.
+If it works on the first try — test it again with bad input.
+
+---
+
+## 1. UNIT TESTING PROTOCOL
+
+### Coverage Requirements
+- Minimum 90% code coverage on all business logic
+- 100% coverage on: encryption, signing, matching engine, ledger
+- Every function must have: happy path + error path + edge case tests
+
+### What MUST Be Unit Tested
+
+#### Authentication & Auth
+- [ ] Password hashing (bcrypt) produces different hash each time
+- [ ] Password verification succeeds with correct password
+- [ ] Password verification fails with wrong password
+- [ ] JWT access token contains correct claims (userId, role, permissions)
+- [ ] JWT access token expires after exactly 15 minutes
+- [ ] JWT refresh token is HTTP-only, secure, SameSite
+- [ ] Expired access token is rejected
+- [ ] Tampered JWT (modified payload) is rejected
+- [ ] JWT with wrong secret is rejected
+- [ ] Refresh token rotation works (old refresh token invalidated)
+- [ ] Account lockout after 5 failed login attempts
+- [ ] Lockout releases after 15 minutes
+- [ ] 2FA TOTP generation produces valid 6-digit codes
+- [ ] 2FA verification accepts correct code
+- [ ] 2FA verification rejects expired code (30s window)
+- [ ] 2FA verification rejects reused code (replay prevention)
+
+#### RBAC (Role-Based Access Control)
+- [ ] Admin can access admin-only endpoints
+- [ ] Merchant CANNOT access admin endpoints
+- [ ] Support CANNOT modify data (read-only)
+- [ ] Merchant A CANNOT access Merchant B's data
+- [ ] Disabled account cannot authenticate
+- [ ] Role change takes effect immediately (no cached permissions)
+- [ ] Permission matrix is enforced at middleware level, not route level
+
+#### Encryption (AES-256-GCM)
+- [ ] Encrypt → Decrypt produces original plaintext
+- [ ] Same plaintext encrypted twice produces DIFFERENT ciphertext (unique IV)
+- [ ] Decryption with wrong master key fails gracefully (not crash)
+- [ ] Decryption with corrupted ciphertext fails gracefully
+- [ ] Encrypted output contains: ciphertext + IV + auth tag (all needed for decryption)
+- [ ] Private key is zeroed from memory after use (Buffer.fill(0))
+- [ ] Master key is never logged, never in error messages, never in stack traces
+
+#### Unique Amount Generation
+- [ ] Generated amount is within valid range (base ± 0.000001 to 0.009999)
+- [ ] Two concurrent invoices for same base amount get DIFFERENT unique amounts
+- [ ] 100 concurrent invoices for same base amount all get unique amounts
+- [ ] Expired invoice releases its reserved amount back to the pool
+- [ ] Amount reservation is atomic (no race conditions)
+- [ ] Amount pool exhaustion is handled gracefully (queue or reject, don't crash)
+
+#### Ledger (Double-Entry Accounting)
+- [ ] Every ledger entry creates exactly TWO rows (debit + credit)
+- [ ] Sum of all debits equals sum of all credits (always balanced)
+- [ ] Ledger entries are immutable (no update, no delete operations exist)
+- [ ] Balance calculation: sum(credits) - sum(debits) = correct balance
+- [ ] Concurrent ledger writes don't corrupt balances (atomic operations)
+- [ ] Ledger rejects negative amounts
+- [ ] Ledger rejects zero amounts
+- [ ] Ledger accounts are isolated (merchant A balance ≠ affected by merchant B)
+
+#### Matching Engine
+- [ ] Exact amount match → success
+- [ ] Amount off by 0.000001 → no match (precision matters)
+- [ ] Correct amount but wrong wallet address → no match
+- [ ] Correct amount + address but expired invoice → no match (flag for review)
+- [ ] Correct amount + address but already matched → no match (duplicate prevention)
+- [ ] Two invoices, two payments, correct cross-match
+- [ ] Payment arrives 1 second before expiry → matches
+- [ ] Payment arrives 1 second after expiry → does NOT match
+- [ ] Underpayment detected and flagged correctly
+- [ ] Overpayment detected and flagged correctly
+- [ ] Matching is idempotent (processing same tx twice = same result)
+
+---
+
+## 2. INTEGRATION TESTING PROTOCOL
+
+### Service-to-Service Communication
+- [ ] API Server publishes "payment:created" → Blockchain Listener receives it
+- [ ] Blockchain Listener publishes "transaction:detected" → Matching Engine receives it
+- [ ] Matching Engine publishes "payment:confirmed" → Notification Service receives it
+- [ ] Withdrawal Processor publishes "signing:request" → Signing Service receives it
+- [ ] Signing Service publishes "signing:complete" → Withdrawal Processor receives it
+- [ ] Queue messages are HMAC-signed and validated by receiver
+- [ ] Tampered queue message is rejected by receiver
+- [ ] Queue message with expired TTL is discarded
+- [ ] Dead letter queue captures failed messages
+- [ ] Service restart does not lose queued messages (Redis persistence)
+
+### Database Integration
+- [ ] MongoDB connection handles disconnect + reconnect gracefully
+- [ ] MongoDB transactions (multi-document) work correctly for invoice creation
+- [ ] Concurrent writes to same document are handled (optimistic locking)
+- [ ] Database indexes are present and optimized (check query plans)
+- [ ] Connection pool is properly sized and doesn't exhaust
+
+### Redis Integration
+- [ ] Redis connection handles disconnect + reconnect gracefully
+- [ ] BullMQ jobs are persisted across Redis restart
+- [ ] Job retry works correctly on failure
+- [ ] Job concurrency limits are respected
+- [ ] Rate limiting data survives Redis restart
+
+---
+
+## 3. BLOCKCHAIN TESTING (TRON TESTNET)
+
+### Must Test on Shasta Testnet BEFORE Mainnet
+
+#### Blockchain Listener
+- [ ] Detects incoming USDT TRC20 transfer within 10 seconds
+- [ ] Correctly parses transfer amount (6 decimal places for USDT)
+- [ ] Correctly identifies sender and receiver addresses
+- [ ] Ignores non-USDT transfers to our wallet
+- [ ] Ignores USDT transfers to wallets not in our system
+- [ ] Handles TronGrid API timeout gracefully (switch to fallback)
+- [ ] Handles TronGrid rate limiting gracefully (backoff)
+- [ ] Resumes from correct block after service restart
+- [ ] Does NOT skip blocks during restart recovery
+- [ ] Detects multiple transactions in same block
+- [ ] Handles empty blocks (no transactions) without errors
+
+#### Transaction Confirmation
+- [ ] Waits for 19 confirmations before marking as confirmed
+- [ ] Handles chain reorganization (block reverted after 5 confirmations)
+- [ ] Transaction stuck at "confirming" is eventually marked as failed with alert
+
+#### Withdrawal Broadcasting
+- [ ] Signed transaction broadcasts successfully to Tron network
+- [ ] Transaction appears on Shasta testnet explorer
+- [ ] Confirmation tracking works for outgoing transactions
+- [ ] Insufficient energy/bandwidth is detected BEFORE signing
+- [ ] Failed broadcast is retried (up to 3 times)
+- [ ] Failed broadcast after retries → queue + alert admin
+
+---
+
+## 4. END-TO-END TESTING (FULL PAYMENT FLOW)
+
+### Happy Path
+- [ ] Merchant creates invoice ($150 USDT)
+- [ ] System returns unique amount (150.000XXX) and wallet address
+- [ ] Customer sends exact amount to wallet address
+- [ ] Blockchain Listener detects transaction
+- [ ] Matching Engine matches to invoice
+- [ ] Invoice status updates: initiated → pending → hash_found → confirming → confirmed → success
+- [ ] Webhook fires to merchant callback URL with correct payload
+- [ ] Merchant receives HTTP 200 confirmation
+- [ ] Ledger entries created correctly (debit + credit)
+- [ ] Dashboard shows updated transaction
+
+### Unhappy Paths (MUST ALL BE TESTED)
+- [ ] Customer sends wrong amount → underpaid/overpaid flag
+- [ ] Customer sends to wrong address → no match, funds in manual review
+- [ ] Customer sends WRONG token (TRX instead of USDT) → ignored, no match
+- [ ] Customer sends after invoice expired → flagged for manual review
+- [ ] Customer sends twice for same invoice → first matches, second flagged
+- [ ] Merchant creates invoice then cancels before payment → payment rejected
+- [ ] Blockchain Listener crashes mid-scan → restarts and catches up without missing tx
+- [ ] Matching Engine crashes after match but before webhook → restarts and sends webhook
+- [ ] MongoDB goes down during invoice creation → graceful error, no orphaned records
+- [ ] Redis goes down → services degrade gracefully, alert fired
+- [ ] TronGrid goes down → auto-switch to fallback RPC, alert fired
+
+### Concurrent Scenarios
+- [ ] 50 invoices created simultaneously → all get unique amounts
+- [ ] 10 payments arrive in same block → all matched correctly
+- [ ] 2 payments arrive for same merchant within 1 second → both handled correctly
+- [ ] Invoice creation + payment detection happen simultaneously → no race condition
+
+---
+
+## 5. SECURITY TESTING
+
+### Authentication Attacks
+- [ ] SQL/NoSQL injection in login form → blocked
+- [ ] XSS payload in username → sanitized
+- [ ] Brute force login (100 attempts) → account locked after 5
+- [ ] Login with valid token but disabled account → rejected
+- [ ] Expired access token cannot access any endpoint
+- [ ] Stolen refresh token from different IP → rejected (IP binding)
+- [ ] CSRF protection on all state-changing endpoints
+- [ ] Session fixation attack → prevented
+
+### API Security Attacks
+- [ ] Request without HMAC signature → rejected (401)
+- [ ] Request with wrong HMAC signature → rejected (401)
+- [ ] Request with expired timestamp (>5 min old) → rejected (replay protection)
+- [ ] Request with reused nonce → rejected (replay protection)
+- [ ] Rate limit exceeded → 429 response with retry-after header
+- [ ] Oversized request body (>1MB) → rejected (413)
+- [ ] Missing required fields → proper validation error (400)
+- [ ] Extra/unexpected fields → ignored (not processed)
+- [ ] Path traversal attempt in file parameters → blocked
+- [ ] Invalid JSON body → proper error response, not crash
+
+### Merchant Isolation
+- [ ] Merchant A's API key cannot access Merchant B's invoices
+- [ ] Merchant A's API key cannot trigger Merchant B's withdrawal
+- [ ] Merchant cannot modify their own role/permissions
+- [ ] Merchant cannot access admin endpoints even with modified JWT
+- [ ] Merchant API key has scope limitations enforced
+
+### Encryption & Key Security
+- [ ] Private keys never appear in any log file
+- [ ] Private keys never appear in error responses
+- [ ] Private keys never appear in API responses
+- [ ] Master encryption key not accessible via any API
+- [ ] Memory dump after signing shows zeroed key (Buffer.fill(0))
+- [ ] Encrypted keys in DB cannot be decrypted without master key
+- [ ] Key rotation works without service downtime
+
+### Webhook Security
+- [ ] Webhook payload has valid HMAC-SHA256 signature
+- [ ] Webhook with tampered payload fails signature verification (merchant side)
+- [ ] Webhook replay (same payload sent again) is detectable via nonce
+- [ ] Webhook URL validation (no internal IPs, no localhost, no file:// protocols)
+- [ ] Webhook timeout doesn't block other operations (async delivery)
+
+### Infrastructure Security
+- [ ] MongoDB is not accessible from internet (IP whitelist)
+- [ ] Redis is not accessible from internet (bind to localhost)
+- [ ] Admin panel only accessible from whitelisted IPs
+- [ ] All endpoints enforce HTTPS (HTTP redirects to HTTPS)
+- [ ] Security headers present: HSTS, CSP, X-Frame-Options, X-Content-Type-Options
+- [ ] CORS allows only whitelisted origins
+- [ ] Error responses don't leak stack traces or internal paths
+- [ ] Health check endpoints are internal only (not public)
+
+---
+
+## 6. RECONCILIATION TESTING
+
+### Internal Consistency
+- [ ] Ledger balance matches expected based on all transactions
+- [ ] Sum of all merchant balances + platform fees = total received
+- [ ] Withdrawal amounts + remaining balances = total received
+- [ ] No orphaned invoices (created but never tracked)
+- [ ] No orphaned transactions (detected but never matched or flagged)
+
+### Blockchain vs Internal
+- [ ] On-chain wallet balance matches internal ledger received amount
+- [ ] Every on-chain incoming tx has a corresponding ledger entry
+- [ ] Every on-chain outgoing tx (withdrawal) has a corresponding ledger entry
+- [ ] No "phantom" ledger entries without blockchain evidence
+- [ ] Reconciliation mismatch triggers immediate alert + withdrawal pause
+
+### Automated Reconciliation
+- [ ] Runs every 15 minutes without failure
+- [ ] Handles TronGrid API timeout during reconciliation
+- [ ] Reports any discrepancy with full details (expected vs actual, tx hashes)
+- [ ] Does NOT auto-correct — only alerts (human must verify)
+
+---
+
+## 7. PERFORMANCE TESTING
+
+### Response Times
+- [ ] API endpoints respond in <200ms (p95)
+- [ ] Invoice creation responds in <500ms (including amount reservation)
+- [ ] Blockchain listener processes new block in <2 seconds
+- [ ] Matching engine matches transaction in <100ms
+- [ ] Webhook delivery initiates in <1 second after match
+
+### Load Testing
+- [ ] System handles 100 concurrent invoice creations
+- [ ] System handles 50 concurrent payment detections
+- [ ] System handles 20 concurrent withdrawals
+- [ ] No memory leaks after 24 hours of continuous operation
+- [ ] Database connection pool doesn't exhaust under load
+- [ ] Redis queue doesn't grow unbounded (processing keeps up)
+
+### Stress Testing
+- [ ] System behavior when MongoDB is slow (>5s queries)
+- [ ] System behavior when Redis is slow
+- [ ] System behavior when TronGrid response time is 10s+
+- [ ] System behavior when one service is completely down
+- [ ] System recovery after all services restart simultaneously
+
+---
+
+## 8. DISASTER RECOVERY TESTING
+
+### Service Failures
+- [ ] Single service crash → other services continue
+- [ ] All services crash → restart recovery finds all stuck transactions
+- [ ] MongoDB crash → services queue operations, resume after reconnect
+- [ ] Redis crash → services alert, degrade gracefully
+- [ ] VPS reboot → all Docker containers restart, services recover
+
+### Data Recovery
+- [ ] MongoDB backup can be restored to clean state
+- [ ] Point-in-time recovery works (Atlas)
+- [ ] Audit log data is never lost even in crash
+- [ ] Encrypted keys can be recovered with master key backup
+
+### Blockchain Edge Cases
+- [ ] Tron network congestion (blocks delayed)
+- [ ] TronGrid returns stale data (old block)
+- [ ] Tron chain reorganization after 10 confirmations
+- [ ] Double-spend attempt detected and rejected
+
+---
+
+## 9. AUDIT LOG VERIFICATION
+
+- [ ] Every login attempt is logged (success + failure)
+- [ ] Every API key creation/regeneration is logged
+- [ ] Every wallet addition is logged
+- [ ] Every withdrawal request is logged
+- [ ] Every withdrawal approval/rejection is logged
+- [ ] Every config change is logged
+- [ ] Every role/permission change is logged
+- [ ] Every dispute action is logged
+- [ ] Logs contain: actor, action, timestamp, IP, user-agent, before/after state
+- [ ] Logs are append-only (no UPDATE or DELETE operations exist in audit service)
+- [ ] Logs cannot be tampered with even by admin
+- [ ] Logs survive service restart
+- [ ] Log timestamps are in UTC
+
+---
+
+## 10. PRE-PRODUCTION CHECKLIST
+
+### Before Switching to Mainnet
+
+#### Security Sign-Off
+- [ ] All security tests pass
+- [ ] No hardcoded secrets in codebase (grep verification)
+- [ ] .env files are gitignored
+- [ ] npm audit shows no critical vulnerabilities
+- [ ] All API endpoints require authentication (except public ones)
+- [ ] Rate limiting active on all endpoints
+- [ ] CORS configured for production domains only
+- [ ] Admin IP whitelist configured
+- [ ] 2FA enabled for all admin accounts
+
+#### Functional Sign-Off
+- [ ] Full payment flow tested on Shasta testnet (minimum 20 successful payments)
+- [ ] All edge cases tested (underpayment, overpayment, expired, duplicate)
+- [ ] Withdrawal flow tested on Shasta testnet (minimum 10 successful withdrawals)
+- [ ] Webhook delivery tested with real merchant endpoint
+- [ ] Reconciliation run 5+ times with zero discrepancies
+- [ ] Matching engine tested with 50+ concurrent invoices
+
+#### Infrastructure Sign-Off
+- [ ] MongoDB Atlas production cluster configured with IP whitelist
+- [ ] Redis secured (password, bind to localhost)
+- [ ] Nginx configured with TLS 1.3, rate limiting, security headers
+- [ ] Firewall: only ports 443 + SSH open
+- [ ] Docker containers have health checks
+- [ ] Log rotation configured (logs don't fill disk)
+- [ ] Monitoring alerts configured (Telegram + email)
+- [ ] Backup schedule verified
+
+#### Operational Sign-Off
+- [ ] Hot wallet funded with small amount of TRX (for energy) + USDT (for test)
+- [ ] Cold wallet address configured
+- [ ] Hot wallet max balance threshold set
+- [ ] Withdrawal approval thresholds configured
+- [ ] First merchant onboarded (test merchant)
+- [ ] Emergency procedures documented (how to pause system, how to drain hot wallet)
+
+---
+
+## 11. POST-LAUNCH MONITORING
+
+### Daily Checks (First 30 Days)
+- [ ] Reconciliation passes (zero discrepancies)
+- [ ] Hot wallet balance within expected range
+- [ ] No failed webhook deliveries
+- [ ] No stuck transactions (pending > 1 hour)
+- [ ] No unexpected errors in logs
+- [ ] All services healthy
+- [ ] Response times within acceptable range
+
+### Weekly Checks
+- [ ] Security audit log review
+- [ ] Failed login attempt patterns
+- [ ] Rate limit hit frequency
+- [ ] TronGrid API usage vs limits
+- [ ] Database storage growth rate
+- [ ] Redis memory usage
+
+### Monthly Checks
+- [ ] npm audit for new vulnerabilities
+- [ ] Dependency updates review
+- [ ] Key rotation due dates
+- [ ] Cold wallet balance verification (manual)
+- [ ] Disaster recovery drill (test backup restore)
+
+---
+
+## TESTING RULES
+
+1. **NEVER skip testnet** — Every payment flow runs on Shasta before mainnet
+2. **NEVER assume success** — If a test passes, add a test where it should fail
+3. **NEVER trust input** — Test with: empty strings, null, undefined, huge numbers, negative numbers, special characters, unicode, SQL injection, NoSQL injection
+4. **NEVER test only the happy path** — The sad path is where money gets lost
+5. **Test what happens BETWEEN steps** — Service crash mid-operation is the most dangerous scenario
+6. **Automate everything** — Manual testing is for discovery, automated testing is for protection
+7. **Log test results** — Every test run should produce a report
+8. **Regression testing** — Every bug fix comes with a test that proves the bug and prevents it from returning
