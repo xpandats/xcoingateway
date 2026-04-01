@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Get Started — XCoinGateway</title>
+    <meta name="description" content="Create your free XCoinGateway account. Start accepting crypto payments in minutes — no setup fees, no monthly charges.">
+    <link rel="icon" type="image/png" href="../../assets/favicon.png">
+    <link rel="stylesheet" href="../../pages.css">
+</head>
+<body>
+    <canvas id="particleCanvas"></canvas>
+    <div class="ambient-orb orb-1"></div><div class="ambient-orb orb-2"></div><div class="ambient-orb orb-3"></div>
+
+    <nav class="navbar" id="navbar">
+        <div class="nav-container">
+            <a href="../../index.html" class="nav-logo">
+                <div class="logo-icon"><img src="../../assets/logo.png" alt="XCoinGateway Logo" width="38" height="38"></div>
+                <span class="logo-text">XCoin<span class="logo-highlight">Gateway</span></span>
+            </a>
+            <div class="nav-links">
+                <a href="../../index.html#features" class="nav-link">Features</a>
+                <a href="../../index.html#how-it-works" class="nav-link">How It Works</a>
+                <a href="../../index.html#chains" class="nav-link">Chains</a>
+                <a href="../../index.html#security" class="nav-link">Security</a>
+                <a href="../../index.html#pricing" class="nav-link">Pricing</a>
+                <a href="../developers/documentation.html" class="nav-link">Developers</a>
+            </div>
+            <div class="nav-actions">
+                <a href="login.html" class="btn-ghost">Log In</a>
+            </div>
+            <button class="mobile-toggle" id="mobileToggle" aria-label="Toggle menu"><span></span><span></span><span></span></button>
+        </div>
+    </nav>
+    <div class="mobile-menu" id="mobileMenu">
+        <div class="mobile-menu-content">
+            <a href="../../index.html#features" class="mobile-link">Features</a>
+            <a href="../../index.html#how-it-works" class="mobile-link">How It Works</a>
+            <a href="../../index.html#chains" class="mobile-link">Chains</a>
+            <a href="../../index.html#security" class="mobile-link">Security</a>
+            <a href="../../index.html#pricing" class="mobile-link">Pricing</a>
+            <a href="../developers/documentation.html" class="mobile-link">Developers</a>
+            <div class="mobile-actions">
+                <a href="login.html" class="btn-ghost">Log In</a>
+            </div>
+        </div>
+    </div>
+
+    <section class="page-hero" style="padding-bottom: 40px;">
+        <div class="container">
+            <h1 class="reveal-up" style="font-size: 2rem;">Create your account</h1>
+            <p class="reveal-up delay-1" style="margin-bottom: 0;">Start accepting crypto payments in minutes. Free to get started.</p>
+        </div>
+    </section>
+
+    <section style="padding: 0 0 80px; position: relative; z-index: 1;">
+        <div class="container">
+            <div class="form-card reveal-up delay-2">
+                <form id="registerForm">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="form-label" for="firstName">First Name</label>
+                            <input type="text" class="form-input" id="firstName" placeholder="John" required>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="lastName">Last Name</label>
+                            <input type="text" class="form-input" id="lastName" placeholder="Doe" required>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="businessName">Business Name</label>
+                        <input type="text" class="form-input" id="businessName" placeholder="Your Company Ltd." required>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="email">Email Address</label>
+                        <input type="email" class="form-input" id="email" placeholder="you@company.com" required>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="password">Password</label>
+                        <input type="password" class="form-input" id="password" placeholder="Minimum 8 characters" required minlength="8">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="confirmPassword">Confirm Password</label>
+                        <input type="password" class="form-input" id="confirmPassword" placeholder="••••••••" required>
+                    </div>
+                    <div style="margin-bottom: 20px;">
+                        <label style="display:flex; align-items:flex-start; gap:8px; cursor:pointer; color: var(--text-secondary); font-size: 0.82rem; line-height: 1.5;">
+                            <input type="checkbox" id="agreeTerms" style="accent-color: var(--accent-teal); margin-top: 3px;" required>
+                            I agree to the <a href="../legal/terms.html" class="form-link" style="margin: 0 4px;">Terms of Service</a> and <a href="../legal/privacy.html" class="form-link" style="margin: 0 4px;">Privacy Policy</a>
+                        </label>
+                    </div>
+                    <button type="submit" class="btn-primary btn-block btn-lg">Create Account →</button>
+                </form>
+                <div class="form-divider">or</div>
+                <a href="#" class="btn-outline btn-block" style="justify-content:center; margin-bottom: 12px;">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M21.35 11.1H12.18V13.83H17.4C17.2 15.65 15.57 17.23 12.18 17.23C9.24 17.23 6.82 14.91 6.82 12C6.82 9.09 9.24 6.77 12.18 6.77C13.5 6.77 14.69 7.26 15.59 8.05L17.72 5.93C16.14 4.49 14.28 3.73 12.18 3.73C7.52 3.73 3.73 7.52 3.73 12C3.73 16.48 7.52 20.27 12.18 20.27C17.08 20.27 20.27 16.73 20.27 12.2C20.27 11.73 20.27 11.45 20.22 11.1H21.35Z" fill="currentColor"/></svg>
+                    Sign up with Google
+                </a>
+                <p style="text-align: center; color: var(--text-tertiary); font-size: 0.85rem; margin-top: 24px;">
+                    Already have an account? <a href="login.html" class="form-link">Log in →</a>
+                </p>
+            </div>
+        </div>
+    </section>
+
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-grid">
+                <div class="footer-brand">
+                    <a href="../../index.html" class="nav-logo">
+                        <div class="logo-icon"><img src="../../assets/logo.png" alt="XCoinGateway Logo" width="38" height="38"></div>
+                        <span class="logo-text">XCoin<span class="logo-highlight">Gateway</span></span>
+                    </a>
+                    <p class="footer-tagline">Multi-chain crypto payment infrastructure for modern businesses.</p>
+                </div>
+                <div class="footer-links-group">
+                    <h4>Product</h4>
+                    <a href="../product/payment-gateway.html">Payment Gateway</a>
+                    <a href="../product/invoicing.html">Invoicing</a>
+                    <a href="../product/auto-sweep.html">Auto Sweep</a>
+                    <a href="../product/withdrawals.html">Withdrawals</a>
+                    <a href="../product/disputes.html">Dispute System</a>
+                </div>
+                <div class="footer-links-group">
+                    <h4>Developers</h4>
+                    <a href="../developers/documentation.html">Documentation</a>
+                    <a href="../developers/api-reference.html">API Reference</a>
+                    <a href="../developers/sdks.html">SDKs</a>
+                    <a href="../developers/webhooks.html">Webhooks</a>
+                    <a href="../developers/status.html">Status Page</a>
+                </div>
+                <div class="footer-links-group">
+                    <h4>Company</h4>
+                    <a href="../company/about.html">About</a>
+                    <a href="../company/blog.html">Blog</a>
+                    <a href="../company/careers.html">Careers</a>
+                    <a href="../company/contact.html">Contact</a>
+                    <a href="../legal/terms.html">Legal</a>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <p>&copy; 2026 XCoinGateway. All rights reserved.</p>
+                <div class="footer-bottom-links">
+                    <a href="../legal/privacy.html">Privacy Policy</a>
+                    <a href="../legal/terms.html">Terms of Service</a>
+                    <a href="../legal/cookies.html">Cookie Policy</a>
+                </div>
+            </div>
+        </div>
+    </footer>
+    <script src="../../pages.js"></script>
+</body>
+</html>

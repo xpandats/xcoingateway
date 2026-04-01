@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Webhooks — XCoinGateway</title>
+    <meta name="description" content="Real-time payment event notifications via webhooks. HMAC-signed payloads, retry logic, and comprehensive event types.">
+    <link rel="icon" type="image/png" href="../../assets/favicon.png">
+    <link rel="stylesheet" href="../../pages.css">
+</head>
+<body>
+    <canvas id="particleCanvas"></canvas>
+    <div class="ambient-orb orb-1"></div><div class="ambient-orb orb-2"></div><div class="ambient-orb orb-3"></div>
+    <nav class="navbar" id="navbar"><div class="nav-container"><a href="../../index.html" class="nav-logo"><div class="logo-icon"><img src="../../assets/logo.png" alt="XCoinGateway Logo" width="38" height="38"></div><span class="logo-text">XCoin<span class="logo-highlight">Gateway</span></span></a><div class="nav-links"><a href="../../index.html#features" class="nav-link">Features</a><a href="../../index.html#how-it-works" class="nav-link">How It Works</a><a href="../../index.html#chains" class="nav-link">Chains</a><a href="../../index.html#security" class="nav-link">Security</a><a href="../../index.html#pricing" class="nav-link">Pricing</a><a href="../developers/documentation.html" class="nav-link">Developers</a></div><div class="nav-actions"><a href="../auth/login.html" class="btn-ghost">Log In</a><a href="../auth/register.html" class="btn-primary">Get Started</a></div><button class="mobile-toggle" id="mobileToggle" aria-label="Toggle menu"><span></span><span></span><span></span></button></div></nav>
+    <div class="mobile-menu" id="mobileMenu"><div class="mobile-menu-content"><a href="../../index.html#features" class="mobile-link">Features</a><a href="../../index.html#how-it-works" class="mobile-link">How It Works</a><a href="../../index.html#chains" class="mobile-link">Chains</a><a href="../../index.html#security" class="mobile-link">Security</a><a href="../../index.html#pricing" class="mobile-link">Pricing</a><a href="../developers/documentation.html" class="mobile-link">Developers</a><div class="mobile-actions"><a href="../auth/login.html" class="btn-ghost">Log In</a><a href="../auth/register.html" class="btn-primary">Get Started</a></div></div></div>
+
+    <section class="page-hero">
+        <div class="container">
+            <span class="section-tag reveal-up">Developers</span>
+            <h1 class="reveal-up delay-1"><span class="gradient-text">Webhooks</span></h1>
+            <p class="reveal-up delay-2">Receive real-time notifications when payment events occur. HMAC-signed payloads delivered to your endpoint with automatic retry on failure.</p>
+        </div>
+    </section>
+
+    <section class="page-section">
+        <div class="container">
+            <h2 class="section-title-sm reveal-up">Event Types</h2>
+            <div class="reveal-up" style="overflow-x:auto;">
+                <table class="api-table">
+                    <thead><tr><th>Event</th><th>Trigger</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>payment.created</code></td><td>Payment initialized</td><td>Fires when a new payment is created via API or dashboard</td></tr>
+                        <tr><td><code>payment.detected</code></td><td>Transaction seen on-chain</td><td>Fires when an incoming transaction matching the payment is detected (unconfirmed)</td></tr>
+                        <tr><td><code>payment.confirming</code></td><td>Awaiting confirmations</td><td>Fires when the transaction is in the mempool/has partial confirmations</td></tr>
+                        <tr><td><code>payment.confirmed</code></td><td>Fully confirmed</td><td>Payment has reached the required number of blockchain confirmations</td></tr>
+                        <tr><td><code>payment.failed</code></td><td>Payment failed</td><td>Transaction reverted, insufficient amount, or expired without payment</td></tr>
+                        <tr><td><code>payment.expired</code></td><td>Payment window closed</td><td>No payment received within the configured time window</td></tr>
+                        <tr><td><code>withdrawal.completed</code></td><td>Funds sent</td><td>Automated or manual withdrawal has been broadcast and confirmed</td></tr>
+                        <tr><td><code>dispute.opened</code></td><td>Dispute raised</td><td>A customer has opened a dispute against this payment</td></tr>
+                        <tr><td><code>dispute.resolved</code></td><td>Dispute closed</td><td>Dispute resolved — refunded or dismissed</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+
+    <section class="page-section">
+        <div class="container">
+            <div class="info-grid reveal-up" style="gap:32px;">
+                <div class="info-text">
+                    <h2>Webhook <span class="gradient-text">Security</span></h2>
+                    <p>Every webhook payload is signed with HMAC-SHA256 using your webhook secret. Always verify the signature before processing to prevent tampering.</p>
+                    <ul class="info-list">
+                        <li><span class="check">✓</span><strong>Signature header</strong>: <code style="font-family: var(--font-mono); font-size:0.8rem;">x-xcg-signature</code></li>
+                        <li><span class="check">✓</span><strong>Algorithm</strong>: HMAC-SHA256(raw body, webhook secret)</li>
+                        <li><span class="check">✓</span><strong>Retry policy</strong>: 3 attempts with exponential backoff (5s, 30s, 5min)</li>
+                        <li><span class="check">✓</span><strong>Timeout</strong>: Your endpoint must respond within 10 seconds</li>
+                        <li><span class="check">✓</span><strong>Success</strong>: Return HTTP 200 to acknowledge receipt</li>
+                    </ul>
+                </div>
+                <div>
+                    <div class="code-block">
+                        <div class="code-header"><span class="code-dot red"></span><span class="code-dot yellow"></span><span class="code-dot green"></span><span class="code-lang">Webhook Payload</span></div>
+                        <pre><code>{
+  <span class="code-str">"event"</span>: <span class="code-val">"payment.confirmed"</span>,
+  <span class="code-str">"payment_id"</span>: <span class="code-val">"pay_8f2a3b7c..."</span>,
+  <span class="code-str">"order_id"</span>: <span class="code-val">"ORD-12345"</span>,
+  <span class="code-str">"pay_amount"</span>: <span class="code-val">"0.04521"</span>,
+  <span class="code-str">"pay_currency"</span>: <span class="code-val">"ETH"</span>,
+  <span class="code-str">"outcome_amount"</span>: <span class="code-num">150.00</span>,
+  <span class="code-str">"outcome_currency"</span>: <span class="code-val">"USDT"</span>,
+  <span class="code-str">"network"</span>: <span class="code-val">"ethereum"</span>,
+  <span class="code-str">"tx_hash"</span>: <span class="code-val">"0x8f2a9c..."</span>,
+  <span class="code-str">"confirmations"</span>: <span class="code-num">12</span>,
+  <span class="code-str">"created_at"</span>: <span class="code-val">"2026-04-01T00:15:00Z"</span>
+}</code></pre>
+                    </div>
+                    <div class="code-block" style="margin-top:16px;">
+                        <div class="code-header"><span class="code-dot red"></span><span class="code-dot yellow"></span><span class="code-dot green"></span><span class="code-lang">Verify Signature (Node.js)</span></div>
+                        <pre><code><span class="code-key">const</span> crypto = <span class="code-func">require</span>(<span class="code-val">'crypto'</span>);
+
+<span class="code-key">function</span> <span class="code-func">verifyWebhook</span>(body, sig, secret) {
+  <span class="code-key">const</span> hash = crypto
+    .<span class="code-func">createHmac</span>(<span class="code-val">'sha256'</span>, secret)
+    .<span class="code-func">update</span>(JSON.<span class="code-func">stringify</span>(body))
+    .<span class="code-func">digest</span>(<span class="code-val">'hex'</span>);
+  <span class="code-key">return</span> hash === sig;
+}</code></pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="page-cta"><div class="container reveal-up"><h2>Test webhooks locally</h2><p>Use our dashboard's webhook testing tool to send test events to your endpoint.</p><div class="cta-actions"><a href="../auth/register.html" class="btn-primary btn-lg">Get Started →</a><a href="api-reference.html" class="btn-outline btn-lg">API Reference</a></div></div></section>
+
+    <footer class="footer"><div class="container"><div class="footer-grid"><div class="footer-brand"><a href="../../index.html" class="nav-logo"><div class="logo-icon"><img src="../../assets/logo.png" alt="XCoinGateway Logo" width="38" height="38"></div><span class="logo-text">XCoin<span class="logo-highlight">Gateway</span></span></a><p class="footer-tagline">Multi-chain crypto payment infrastructure for modern businesses.</p></div><div class="footer-links-group"><h4>Product</h4><a href="../product/payment-gateway.html">Payment Gateway</a><a href="../product/invoicing.html">Invoicing</a><a href="../product/auto-sweep.html">Auto Sweep</a><a href="../product/withdrawals.html">Withdrawals</a><a href="../product/disputes.html">Dispute System</a></div><div class="footer-links-group"><h4>Developers</h4><a href="documentation.html">Documentation</a><a href="api-reference.html">API Reference</a><a href="sdks.html">SDKs</a><a href="webhooks.html">Webhooks</a><a href="status.html">Status Page</a></div><div class="footer-links-group"><h4>Company</h4><a href="../company/about.html">About</a><a href="../company/blog.html">Blog</a><a href="../company/careers.html">Careers</a><a href="../company/contact.html">Contact</a><a href="../legal/terms.html">Legal</a></div></div><div class="footer-bottom"><p>&copy; 2026 XCoinGateway. All rights reserved.</p><div class="footer-bottom-links"><a href="../legal/privacy.html">Privacy Policy</a><a href="../legal/terms.html">Terms of Service</a><a href="../legal/cookies.html">Cookie Policy</a></div></div></div></footer>
+    <script src="../../pages.js"></script>
+</body>
+</html>

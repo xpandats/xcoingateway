@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API Reference — XCoinGateway</title>
+    <meta name="description" content="Complete REST API reference for XCoinGateway. Endpoints for payments, invoices, transactions, webhooks, and withdrawals.">
+    <link rel="icon" type="image/png" href="../../assets/favicon.png">
+    <link rel="stylesheet" href="../../pages.css">
+</head>
+<body>
+    <canvas id="particleCanvas"></canvas>
+    <div class="ambient-orb orb-1"></div><div class="ambient-orb orb-2"></div><div class="ambient-orb orb-3"></div>
+    <nav class="navbar" id="navbar"><div class="nav-container"><a href="../../index.html" class="nav-logo"><div class="logo-icon"><img src="../../assets/logo.png" alt="XCoinGateway Logo" width="38" height="38"></div><span class="logo-text">XCoin<span class="logo-highlight">Gateway</span></span></a><div class="nav-links"><a href="../../index.html#features" class="nav-link">Features</a><a href="../../index.html#how-it-works" class="nav-link">How It Works</a><a href="../../index.html#chains" class="nav-link">Chains</a><a href="../../index.html#security" class="nav-link">Security</a><a href="../../index.html#pricing" class="nav-link">Pricing</a><a href="../developers/documentation.html" class="nav-link">Developers</a></div><div class="nav-actions"><a href="../auth/login.html" class="btn-ghost">Log In</a><a href="../auth/register.html" class="btn-primary">Get Started</a></div><button class="mobile-toggle" id="mobileToggle" aria-label="Toggle menu"><span></span><span></span><span></span></button></div></nav>
+    <div class="mobile-menu" id="mobileMenu"><div class="mobile-menu-content"><a href="../../index.html#features" class="mobile-link">Features</a><a href="../../index.html#how-it-works" class="mobile-link">How It Works</a><a href="../../index.html#chains" class="mobile-link">Chains</a><a href="../../index.html#security" class="mobile-link">Security</a><a href="../../index.html#pricing" class="mobile-link">Pricing</a><a href="../developers/documentation.html" class="mobile-link">Developers</a><div class="mobile-actions"><a href="../auth/login.html" class="btn-ghost">Log In</a><a href="../auth/register.html" class="btn-primary">Get Started</a></div></div></div>
+
+    <section class="page-hero">
+        <div class="container">
+            <span class="section-tag reveal-up">Developers</span>
+            <h1 class="reveal-up delay-1">API <span class="gradient-text">Reference</span></h1>
+            <p class="reveal-up delay-2">Base URL: <code style="background:rgba(0,229,160,0.08); padding:4px 10px; border-radius:4px; font-family:var(--font-mono); border:1px solid rgba(0,229,160,0.15); color:var(--accent-teal);">https://api.xcoingateway.com/v1</code></p>
+        </div>
+    </section>
+
+    <section class="page-section">
+        <div class="container">
+            <h2 class="section-title-sm reveal-up">Payments</h2>
+            <p class="section-desc reveal-up">Create, retrieve, and manage crypto payments.</p>
+            <div class="reveal-up" style="overflow-x:auto;">
+                <table class="api-table">
+                    <thead><tr><th>Method</th><th>Endpoint</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td><span class="method-badge post">POST</span></td><td><code>/payments</code></td><td>Create a new payment</td></tr>
+                        <tr><td><span class="method-badge get">GET</span></td><td><code>/payments/:id</code></td><td>Get payment by ID</td></tr>
+                        <tr><td><span class="method-badge get">GET</span></td><td><code>/payments</code></td><td>List all payments (paginated)</td></tr>
+                        <tr><td><span class="method-badge get">GET</span></td><td><code>/payments/:id/status</code></td><td>Get real-time payment status</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="info-grid reveal-up" style="margin-top:48px; gap:32px;">
+                <div>
+                    <h3 style="margin-bottom:16px;">Create Payment — Request</h3>
+                    <div class="code-block">
+                        <div class="code-header"><span class="code-dot red"></span><span class="code-dot yellow"></span><span class="code-dot green"></span><span class="code-lang">POST /payments</span></div>
+                        <pre><code>{
+  <span class="code-str">"price_amount"</span>: <span class="code-num">150.00</span>,
+  <span class="code-str">"price_currency"</span>: <span class="code-val">"USD"</span>,
+  <span class="code-str">"pay_currency"</span>: <span class="code-val">"ETH"</span>,
+  <span class="code-str">"order_id"</span>: <span class="code-val">"ORD-12345"</span>,
+  <span class="code-str">"order_description"</span>: <span class="code-val">"Premium Plan"</span>,
+  <span class="code-str">"ipn_callback_url"</span>: <span class="code-val">"https://you.com/hook"</span>,
+  <span class="code-str">"success_url"</span>: <span class="code-val">"https://you.com/success"</span>,
+  <span class="code-str">"cancel_url"</span>: <span class="code-val">"https://you.com/cancel"</span>
+}</code></pre>
+                    </div>
+                </div>
+                <div>
+                    <h3 style="margin-bottom:16px;">Create Payment — Response</h3>
+                    <div class="code-block">
+                        <div class="code-header"><span class="code-dot red"></span><span class="code-dot yellow"></span><span class="code-dot green"></span><span class="code-lang">200 OK</span></div>
+                        <pre><code>{
+  <span class="code-str">"id"</span>: <span class="code-val">"pay_8f2a3b7c..."</span>,
+  <span class="code-str">"status"</span>: <span class="code-val">"waiting"</span>,
+  <span class="code-str">"pay_address"</span>: <span class="code-val">"0x7B3...F2A1"</span>,
+  <span class="code-str">"pay_amount"</span>: <span class="code-val">"0.04521"</span>,
+  <span class="code-str">"pay_currency"</span>: <span class="code-val">"ETH"</span>,
+  <span class="code-str">"price_amount"</span>: <span class="code-num">150.00</span>,
+  <span class="code-str">"price_currency"</span>: <span class="code-val">"USD"</span>,
+  <span class="code-str">"payment_url"</span>: <span class="code-val">"https://pay.xcoingateway.com/pay_8f2..."</span>,
+  <span class="code-str">"expires_at"</span>: <span class="code-val">"2026-04-01T01:00:00Z"</span>,
+  <span class="code-str">"created_at"</span>: <span class="code-val">"2026-04-01T00:00:00Z"</span>
+}</code></pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="page-section">
+        <div class="container">
+            <h2 class="section-title-sm reveal-up">Invoices</h2>
+            <div class="reveal-up" style="overflow-x:auto;">
+                <table class="api-table">
+                    <thead><tr><th>Method</th><th>Endpoint</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td><span class="method-badge post">POST</span></td><td><code>/invoices</code></td><td>Create a new invoice</td></tr>
+                        <tr><td><span class="method-badge get">GET</span></td><td><code>/invoices/:id</code></td><td>Get invoice by ID</td></tr>
+                        <tr><td><span class="method-badge get">GET</span></td><td><code>/invoices</code></td><td>List all invoices (paginated)</td></tr>
+                        <tr><td><span class="method-badge put">PUT</span></td><td><code>/invoices/:id/cancel</code></td><td>Cancel an unpaid invoice</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+
+    <section class="page-section">
+        <div class="container">
+            <h2 class="section-title-sm reveal-up">Withdrawals</h2>
+            <div class="reveal-up" style="overflow-x:auto;">
+                <table class="api-table">
+                    <thead><tr><th>Method</th><th>Endpoint</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td><span class="method-badge post">POST</span></td><td><code>/withdrawals</code></td><td>Request a manual withdrawal</td></tr>
+                        <tr><td><span class="method-badge get">GET</span></td><td><code>/withdrawals/:id</code></td><td>Get withdrawal by ID</td></tr>
+                        <tr><td><span class="method-badge get">GET</span></td><td><code>/withdrawals</code></td><td>List withdrawal history</td></tr>
+                        <tr><td><span class="method-badge get">GET</span></td><td><code>/balance</code></td><td>Get available balance</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+
+    <section class="page-section">
+        <div class="container">
+            <h2 class="section-title-sm reveal-up">Currencies & Status</h2>
+            <div class="reveal-up" style="overflow-x:auto;">
+                <table class="api-table">
+                    <thead><tr><th>Method</th><th>Endpoint</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td><span class="method-badge get">GET</span></td><td><code>/currencies</code></td><td>List all supported currencies</td></tr>
+                        <tr><td><span class="method-badge get">GET</span></td><td><code>/currencies/:code/estimate</code></td><td>Get estimated exchange rate</td></tr>
+                        <tr><td><span class="method-badge get">GET</span></td><td><code>/status</code></td><td>API health check</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+
+    <section class="page-section">
+        <div class="container">
+            <h2 class="section-title-sm reveal-up">Error Codes</h2>
+            <div class="reveal-up" style="overflow-x:auto;">
+                <table class="api-table">
+                    <thead><tr><th>Code</th><th>Status</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>400</code></td><td>Bad Request</td><td>Invalid parameters or missing required fields</td></tr>
+                        <tr><td><code>401</code></td><td>Unauthorized</td><td>Invalid or missing API key/signature</td></tr>
+                        <tr><td><code>403</code></td><td>Forbidden</td><td>Insufficient permissions for this action</td></tr>
+                        <tr><td><code>404</code></td><td>Not Found</td><td>Resource does not exist</td></tr>
+                        <tr><td><code>409</code></td><td>Conflict</td><td>Duplicate idempotency key</td></tr>
+                        <tr><td><code>429</code></td><td>Rate Limited</td><td>Too many requests — slow down</td></tr>
+                        <tr><td><code>500</code></td><td>Server Error</td><td>Internal error — retry with backoff</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+
+    <section class="page-cta"><div class="container reveal-up"><h2>Start building with our API</h2><p>Get your API keys and integrate in minutes.</p><div class="cta-actions"><a href="../auth/register.html" class="btn-primary btn-lg">Get API Keys →</a><a href="sdks.html" class="btn-outline btn-lg">View SDKs</a></div></div></section>
+
+    <footer class="footer"><div class="container"><div class="footer-grid"><div class="footer-brand"><a href="../../index.html" class="nav-logo"><div class="logo-icon"><img src="../../assets/logo.png" alt="XCoinGateway Logo" width="38" height="38"></div><span class="logo-text">XCoin<span class="logo-highlight">Gateway</span></span></a><p class="footer-tagline">Multi-chain crypto payment infrastructure for modern businesses.</p></div><div class="footer-links-group"><h4>Product</h4><a href="../product/payment-gateway.html">Payment Gateway</a><a href="../product/invoicing.html">Invoicing</a><a href="../product/auto-sweep.html">Auto Sweep</a><a href="../product/withdrawals.html">Withdrawals</a><a href="../product/disputes.html">Dispute System</a></div><div class="footer-links-group"><h4>Developers</h4><a href="documentation.html">Documentation</a><a href="api-reference.html">API Reference</a><a href="sdks.html">SDKs</a><a href="webhooks.html">Webhooks</a><a href="status.html">Status Page</a></div><div class="footer-links-group"><h4>Company</h4><a href="../company/about.html">About</a><a href="../company/blog.html">Blog</a><a href="../company/careers.html">Careers</a><a href="../company/contact.html">Contact</a><a href="../legal/terms.html">Legal</a></div></div><div class="footer-bottom"><p>&copy; 2026 XCoinGateway. All rights reserved.</p><div class="footer-bottom-links"><a href="../legal/privacy.html">Privacy Policy</a><a href="../legal/terms.html">Terms of Service</a><a href="../legal/cookies.html">Cookie Policy</a></div></div></div></footer>
+    <script src="../../pages.js"></script>
+</body>
+</html>

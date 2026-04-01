@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SDKs & Libraries — XCoinGateway</title>
+    <meta name="description" content="Official XCoinGateway SDKs for Node.js, Python, PHP, Go, and Ruby. Install via package manager and integrate in minutes.">
+    <link rel="icon" type="image/png" href="../../assets/favicon.png">
+    <link rel="stylesheet" href="../../pages.css">
+</head>
+<body>
+    <canvas id="particleCanvas"></canvas>
+    <div class="ambient-orb orb-1"></div><div class="ambient-orb orb-2"></div><div class="ambient-orb orb-3"></div>
+    <nav class="navbar" id="navbar"><div class="nav-container"><a href="../../index.html" class="nav-logo"><div class="logo-icon"><img src="../../assets/logo.png" alt="XCoinGateway Logo" width="38" height="38"></div><span class="logo-text">XCoin<span class="logo-highlight">Gateway</span></span></a><div class="nav-links"><a href="../../index.html#features" class="nav-link">Features</a><a href="../../index.html#how-it-works" class="nav-link">How It Works</a><a href="../../index.html#chains" class="nav-link">Chains</a><a href="../../index.html#security" class="nav-link">Security</a><a href="../../index.html#pricing" class="nav-link">Pricing</a><a href="../developers/documentation.html" class="nav-link">Developers</a></div><div class="nav-actions"><a href="../auth/login.html" class="btn-ghost">Log In</a><a href="../auth/register.html" class="btn-primary">Get Started</a></div><button class="mobile-toggle" id="mobileToggle" aria-label="Toggle menu"><span></span><span></span><span></span></button></div></nav>
+    <div class="mobile-menu" id="mobileMenu"><div class="mobile-menu-content"><a href="../../index.html#features" class="mobile-link">Features</a><a href="../../index.html#how-it-works" class="mobile-link">How It Works</a><a href="../../index.html#chains" class="mobile-link">Chains</a><a href="../../index.html#security" class="mobile-link">Security</a><a href="../../index.html#pricing" class="mobile-link">Pricing</a><a href="../developers/documentation.html" class="mobile-link">Developers</a><div class="mobile-actions"><a href="../auth/login.html" class="btn-ghost">Log In</a><a href="../auth/register.html" class="btn-primary">Get Started</a></div></div></div>
+
+    <section class="page-hero">
+        <div class="container">
+            <span class="section-tag reveal-up">Developers</span>
+            <h1 class="reveal-up delay-1">Official <span class="gradient-text">SDKs</span></h1>
+            <p class="reveal-up delay-2">Client libraries for the most popular programming languages. Install, configure, and start accepting payments.</p>
+        </div>
+    </section>
+
+    <section class="page-section">
+        <div class="container">
+            <div class="sdk-grid">
+                <div class="sdk-card reveal-up delay-1">
+                    <div class="sdk-card-icon">🟢</div>
+                    <h3>Node.js</h3>
+                    <p>Official JavaScript/TypeScript SDK with full type support.</p>
+                    <code>npm i @xcoingateway/sdk</code>
+                </div>
+                <div class="sdk-card reveal-up delay-2">
+                    <div class="sdk-card-icon">🐍</div>
+                    <h3>Python</h3>
+                    <p>Python 3.8+ SDK with async support and type hints.</p>
+                    <code>pip install xcoingateway</code>
+                </div>
+                <div class="sdk-card reveal-up delay-3">
+                    <div class="sdk-card-icon">🐘</div>
+                    <h3>PHP</h3>
+                    <p>PHP 8.0+ SDK compatible with Laravel and Symfony.</p>
+                    <code>composer require xcoingateway/sdk</code>
+                </div>
+                <div class="sdk-card reveal-up delay-1">
+                    <div class="sdk-card-icon">🔵</div>
+                    <h3>Go</h3>
+                    <p>Idiomatic Go client with context support and retries.</p>
+                    <code>go get xcoingateway.com/sdk</code>
+                </div>
+                <div class="sdk-card reveal-up delay-2">
+                    <div class="sdk-card-icon">💎</div>
+                    <h3>Ruby</h3>
+                    <p>Ruby 3.0+ gem with Rails integration helpers.</p>
+                    <code>gem install xcoingateway</code>
+                </div>
+                <div class="sdk-card reveal-up delay-3">
+                    <div class="sdk-card-icon">🌐</div>
+                    <h3>REST API</h3>
+                    <p>Use any language with our standard REST API and HMAC auth.</p>
+                    <code>api.xcoingateway.com/v1</code>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="page-section">
+        <div class="container">
+            <h2 class="section-title-sm reveal-up">Quick Examples</h2>
+            <div class="info-grid reveal-up" style="margin-top:32px; gap:32px;">
+                <div>
+                    <div class="code-block">
+                        <div class="code-header"><span class="code-dot red"></span><span class="code-dot yellow"></span><span class="code-dot green"></span><span class="code-lang">Python</span></div>
+                        <pre><code><span class="code-key">from</span> xcoingateway <span class="code-key">import</span> XCoinGateway
+
+xcg = <span class="code-func">XCoinGateway</span>(
+    api_key=<span class="code-val">"xcg_live_..."</span>,
+    secret=<span class="code-val">"xcg_secret_..."</span>
+)
+
+payment = xcg.<span class="code-func">create_payment</span>(
+    price_amount=<span class="code-num">49.99</span>,
+    price_currency=<span class="code-val">"USD"</span>,
+    pay_currency=<span class="code-val">"BTC"</span>,
+    order_id=<span class="code-val">"ORD-456"</span>
+)
+
+<span class="code-func">print</span>(payment.payment_url)</code></pre>
+                    </div>
+                </div>
+                <div>
+                    <div class="code-block">
+                        <div class="code-header"><span class="code-dot red"></span><span class="code-dot yellow"></span><span class="code-dot green"></span><span class="code-lang">PHP</span></div>
+                        <pre><code><span class="code-key">use</span> XCoinGateway\Client;
+
+<span class="code-str">$xcg</span> = <span class="code-key">new</span> <span class="code-func">Client</span>(
+    <span class="code-val">'xcg_live_...'</span>,
+    <span class="code-val">'xcg_secret_...'</span>
+);
+
+<span class="code-str">$payment</span> = <span class="code-str">$xcg</span>-><span class="code-func">createPayment</span>([
+    <span class="code-val">'price_amount'</span> => <span class="code-num">49.99</span>,
+    <span class="code-val">'price_currency'</span> => <span class="code-val">'USD'</span>,
+    <span class="code-val">'pay_currency'</span> => <span class="code-val">'BTC'</span>,
+    <span class="code-val">'order_id'</span> => <span class="code-val">'ORD-456'</span>,
+]);
+
+<span class="code-func">header</span>(<span class="code-val">"Location: "</span>.<span class="code-str">$payment</span>->payment_url);</code></pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="page-cta"><div class="container reveal-up"><h2>Find us on GitHub</h2><p>All SDKs are open source. Contributions welcome.</p><div class="cta-actions"><a href="https://github.com/xpandats/xcoingateway" class="btn-primary btn-lg" target="_blank">View on GitHub →</a><a href="api-reference.html" class="btn-outline btn-lg">API Reference</a></div></div></section>
+
+    <footer class="footer"><div class="container"><div class="footer-grid"><div class="footer-brand"><a href="../../index.html" class="nav-logo"><div class="logo-icon"><img src="../../assets/logo.png" alt="XCoinGateway Logo" width="38" height="38"></div><span class="logo-text">XCoin<span class="logo-highlight">Gateway</span></span></a><p class="footer-tagline">Multi-chain crypto payment infrastructure for modern businesses.</p></div><div class="footer-links-group"><h4>Product</h4><a href="../product/payment-gateway.html">Payment Gateway</a><a href="../product/invoicing.html">Invoicing</a><a href="../product/auto-sweep.html">Auto Sweep</a><a href="../product/withdrawals.html">Withdrawals</a><a href="../product/disputes.html">Dispute System</a></div><div class="footer-links-group"><h4>Developers</h4><a href="documentation.html">Documentation</a><a href="api-reference.html">API Reference</a><a href="sdks.html">SDKs</a><a href="webhooks.html">Webhooks</a><a href="status.html">Status Page</a></div><div class="footer-links-group"><h4>Company</h4><a href="../company/about.html">About</a><a href="../company/blog.html">Blog</a><a href="../company/careers.html">Careers</a><a href="../company/contact.html">Contact</a><a href="../legal/terms.html">Legal</a></div></div><div class="footer-bottom"><p>&copy; 2026 XCoinGateway. All rights reserved.</p><div class="footer-bottom-links"><a href="../legal/privacy.html">Privacy Policy</a><a href="../legal/terms.html">Terms of Service</a><a href="../legal/cookies.html">Cookie Policy</a></div></div></div></footer>
+    <script src="../../pages.js"></script>
+</body>
+</html>

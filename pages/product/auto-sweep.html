@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Auto Conversion — XCoinGateway</title>
+    <meta name="description" content="Automatically convert any incoming cryptocurrency to USDT. Zero volatility risk, instant settlement, transparent fees.">
+    <link rel="icon" type="image/png" href="../../assets/favicon.png">
+    <link rel="stylesheet" href="../../pages.css">
+</head>
+<body>
+    <canvas id="particleCanvas"></canvas>
+    <div class="ambient-orb orb-1"></div><div class="ambient-orb orb-2"></div><div class="ambient-orb orb-3"></div>
+    <nav class="navbar" id="navbar"><div class="nav-container"><a href="../../index.html" class="nav-logo"><div class="logo-icon"><img src="../../assets/logo.png" alt="XCoinGateway Logo" width="38" height="38"></div><span class="logo-text">XCoin<span class="logo-highlight">Gateway</span></span></a><div class="nav-links"><a href="../../index.html#features" class="nav-link">Features</a><a href="../../index.html#how-it-works" class="nav-link">How It Works</a><a href="../../index.html#chains" class="nav-link">Chains</a><a href="../../index.html#security" class="nav-link">Security</a><a href="../../index.html#pricing" class="nav-link">Pricing</a><a href="../developers/documentation.html" class="nav-link">Developers</a></div><div class="nav-actions"><a href="../auth/login.html" class="btn-ghost">Log In</a><a href="../auth/register.html" class="btn-primary">Get Started</a></div><button class="mobile-toggle" id="mobileToggle" aria-label="Toggle menu"><span></span><span></span><span></span></button></div></nav>
+    <div class="mobile-menu" id="mobileMenu"><div class="mobile-menu-content"><a href="../../index.html#features" class="mobile-link">Features</a><a href="../../index.html#how-it-works" class="mobile-link">How It Works</a><a href="../../index.html#chains" class="mobile-link">Chains</a><a href="../../index.html#pricing" class="mobile-link">Pricing</a><a href="../developers/documentation.html" class="mobile-link">Developers</a><div class="mobile-actions"><a href="../auth/login.html" class="btn-ghost">Log In</a><a href="../auth/register.html" class="btn-primary">Get Started</a></div></div></div>
+
+    <section class="page-hero">
+        <div class="container">
+            <span class="section-tag reveal-up">Product</span>
+            <h1 class="reveal-up delay-1">Auto-convert to USDT.<br><span class="gradient-text">Zero volatility.</span></h1>
+            <p class="reveal-up delay-2">Accept any cryptocurrency and automatically receive USDT. No manual swaps, no price risk, no surprises — just stable revenue.</p>
+        </div>
+    </section>
+
+    <section class="page-section">
+        <div class="container">
+            <div class="info-grid reveal-up">
+                <div class="info-text">
+                    <h2>How <span class="gradient-text">auto-conversion</span> works</h2>
+                    <p>When a customer pays with ETH, BTC, SOL, or any supported token, XCoinGateway automatically converts it to USDT at the confirmed market rate. The converted USDT is settled to your wallet on your configured schedule.</p>
+                    <ul class="info-list">
+                        <li><span class="check">✓</span>Conversion happens immediately upon payment confirmation</li>
+                        <li><span class="check">✓</span>Market rate locked at time of blockchain confirmation</li>
+                        <li><span class="check">✓</span>Full breakdown visible in merchant dashboard</li>
+                        <li><span class="check">✓</span>Transparent conversion fees — no hidden markups</li>
+                        <li><span class="check">✓</span>Settlement in USDT TRC20 for lowest gas costs</li>
+                    </ul>
+                </div>
+                <div class="info-visual">
+                    <div style="text-align: left; padding: 16px;">
+                        <div style="display:flex; align-items:center; gap:12px; padding:16px; background:rgba(255,255,255,0.03); border-radius:8px; margin-bottom:12px;">
+                            <span style="font-size:1.5rem;">Ξ</span>
+                            <div style="flex:1;"><div style="font-size:0.85rem; font-weight:600;">0.04521 ETH</div><div style="font-size:0.75rem; color:var(--text-tertiary);">Received from customer</div></div>
+                            <span style="color:var(--accent-teal);">→</span>
+                        </div>
+                        <div style="display:flex; align-items:center; gap:12px; padding:16px; background:rgba(0,229,160,0.06); border:1px solid rgba(0,229,160,0.15); border-radius:8px; margin-bottom:12px;">
+                            <span style="font-size:1.5rem;">🔄</span>
+                            <div style="flex:1;"><div style="font-size:0.85rem; font-weight:600;">Auto-Converting...</div><div style="font-size:0.75rem; color:var(--text-tertiary);">Rate: 1 ETH = $3,315.42</div></div>
+                        </div>
+                        <div style="display:flex; align-items:center; gap:12px; padding:16px; background:rgba(34,197,94,0.06); border:1px solid rgba(34,197,94,0.15); border-radius:8px;">
+                            <span style="font-size:1.5rem;">💵</span>
+                            <div style="flex:1;"><div style="font-size:0.85rem; font-weight:600; color:#22C55E;">150.00 USDT</div><div style="font-size:0.75rem; color:var(--text-tertiary);">Settled to your wallet</div></div>
+                            <span style="color:#22C55E;">✓</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="page-section">
+        <div class="container">
+            <div class="feature-grid">
+                <div class="feature-box reveal-up delay-1">
+                    <div class="feature-box-icon">🛡️</div>
+                    <h3>Volatility Protection</h3>
+                    <p>Market rates are locked at confirmation time. Whether BTC drops 5% after your customer pays — you still receive the exact USDT amount invoiced.</p>
+                </div>
+                <div class="feature-box reveal-up delay-2">
+                    <div class="feature-box-icon">📈</div>
+                    <h3>Best Market Rates</h3>
+                    <p>Our conversion engine aggregates rates from multiple liquidity providers to ensure you always get the best available rate at the time of conversion.</p>
+                </div>
+                <div class="feature-box reveal-up delay-3">
+                    <div class="feature-box-icon">📋</div>
+                    <h3>Complete Audit Trail</h3>
+                    <p>Every conversion is logged with the original token, amount, exchange rate, fee, and resulting USDT. Fully exportable for accounting and tax reporting.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="page-cta"><div class="container reveal-up"><h2>Eliminate crypto volatility</h2><p>Start receiving stable USDT for every crypto payment.</p><div class="cta-actions"><a href="../auth/register.html" class="btn-primary btn-lg">Get Started →</a></div></div></section>
+
+    <footer class="footer"><div class="container"><div class="footer-grid"><div class="footer-brand"><a href="../../index.html" class="nav-logo"><div class="logo-icon"><img src="../../assets/logo.png" alt="XCoinGateway Logo" width="38" height="38"></div><span class="logo-text">XCoin<span class="logo-highlight">Gateway</span></span></a><p class="footer-tagline">Multi-chain crypto payment infrastructure for modern businesses.</p></div><div class="footer-links-group"><h4>Product</h4><a href="payment-gateway.html">Payment Gateway</a><a href="invoicing.html">Invoicing</a><a href="auto-sweep.html">Auto Sweep</a><a href="withdrawals.html">Withdrawals</a><a href="disputes.html">Dispute System</a></div><div class="footer-links-group"><h4>Developers</h4><a href="../developers/documentation.html">Documentation</a><a href="../developers/api-reference.html">API Reference</a><a href="../developers/sdks.html">SDKs</a><a href="../developers/webhooks.html">Webhooks</a><a href="../developers/status.html">Status Page</a></div><div class="footer-links-group"><h4>Company</h4><a href="../company/about.html">About</a><a href="../company/blog.html">Blog</a><a href="../company/careers.html">Careers</a><a href="../company/contact.html">Contact</a><a href="../legal/terms.html">Legal</a></div></div><div class="footer-bottom"><p>&copy; 2026 XCoinGateway. All rights reserved.</p><div class="footer-bottom-links"><a href="../legal/privacy.html">Privacy Policy</a><a href="../legal/terms.html">Terms of Service</a><a href="../legal/cookies.html">Cookie Policy</a></div></div></div></footer>
+    <script src="../../pages.js"></script>
+</body>
+</html>

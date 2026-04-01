@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Terms of Service — XCoinGateway</title>
+    <meta name="description" content="XCoinGateway Terms of Service. Read the terms governing your use of our crypto payment gateway platform.">
+    <link rel="icon" type="image/png" href="../../assets/favicon.png">
+    <link rel="stylesheet" href="../../pages.css">
+</head>
+<body>
+    <canvas id="particleCanvas"></canvas>
+    <div class="ambient-orb orb-1"></div><div class="ambient-orb orb-2"></div><div class="ambient-orb orb-3"></div>
+    <nav class="navbar" id="navbar"><div class="nav-container"><a href="../../index.html" class="nav-logo"><div class="logo-icon"><img src="../../assets/logo.png" alt="XCoinGateway Logo" width="38" height="38"></div><span class="logo-text">XCoin<span class="logo-highlight">Gateway</span></span></a><div class="nav-links"><a href="../../index.html#features" class="nav-link">Features</a><a href="../../index.html#how-it-works" class="nav-link">How It Works</a><a href="../../index.html#chains" class="nav-link">Chains</a><a href="../../index.html#security" class="nav-link">Security</a><a href="../../index.html#pricing" class="nav-link">Pricing</a><a href="../developers/documentation.html" class="nav-link">Developers</a></div><div class="nav-actions"><a href="../auth/login.html" class="btn-ghost">Log In</a><a href="../auth/register.html" class="btn-primary">Get Started</a></div><button class="mobile-toggle" id="mobileToggle" aria-label="Toggle menu"><span></span><span></span><span></span></button></div></nav>
+    <div class="mobile-menu" id="mobileMenu"><div class="mobile-menu-content"><a href="../../index.html#features" class="mobile-link">Features</a><a href="../../index.html#how-it-works" class="mobile-link">How It Works</a><a href="../../index.html#chains" class="mobile-link">Chains</a><a href="../../index.html#pricing" class="mobile-link">Pricing</a><a href="../developers/documentation.html" class="mobile-link">Developers</a><div class="mobile-actions"><a href="../auth/login.html" class="btn-ghost">Log In</a><a href="../auth/register.html" class="btn-primary">Get Started</a></div></div></div>
+
+    <section class="page-hero">
+        <div class="container">
+            <span class="section-tag reveal-up">Legal</span>
+            <h1 class="reveal-up delay-1">Terms of Service</h1>
+            <p class="reveal-up delay-2">Please read these terms carefully before using the XCoinGateway platform.</p>
+        </div>
+    </section>
+
+    <div class="legal-content">
+        <div class="legal-meta"><span>Last Updated: March 28, 2026</span><span>Effective: March 28, 2026</span></div>
+
+        <h2>1. Acceptance of Terms</h2>
+        <p>By accessing or using XCoinGateway ("Platform"), you agree to be bound by these Terms of Service. If you are using the Platform on behalf of a business, you represent that you have authority to bind that entity to these terms.</p>
+
+        <h2>2. Services</h2>
+        <p>XCoinGateway provides a multi-chain cryptocurrency payment processing gateway that enables merchants to:</p>
+        <ul>
+            <li>Accept payments in supported cryptocurrencies across 8 blockchain networks</li>
+            <li>Automatically convert received payments to USDT for settlement</li>
+            <li>Manage invoices, transactions, and withdrawals via dashboard or API</li>
+            <li>Receive webhook notifications for payment events</li>
+            <li>Access dispute resolution and refund mechanisms</li>
+        </ul>
+
+        <h2>3. Account Registration</h2>
+        <p>To use merchant services, you must create an account and provide accurate, current, and complete information. You are responsible for maintaining the confidentiality of your account credentials, API keys, and webhook secrets. You must notify us immediately of any unauthorized access.</p>
+
+        <h2>4. Merchant Obligations</h2>
+        <p>As a merchant using XCoinGateway, you agree to:</p>
+        <ul>
+            <li>Provide accurate business information and complete verification when requested</li>
+            <li>Comply with all applicable laws and regulations in your jurisdiction</li>
+            <li>Not use the Platform for illegal activities, money laundering, or sanctions evasion</li>
+            <li>Maintain secure storage of API keys and never expose them in client-side code</li>
+            <li>Implement proper webhook signature verification (HMAC) to prevent tampering</li>
+            <li>Respond to customer disputes within the specified deadlines</li>
+        </ul>
+
+        <h2>5. Payments & Settlement</h2>
+        <p>All invoices are denominated in USDT value. When a customer pays with a supported cryptocurrency, the amount is automatically converted to USDT at the market rate at time of confirmation. Settlement is made to the merchant's registered TRC20 wallet address based on configured withdrawal schedules and thresholds.</p>
+        <p>XCoinGateway is not responsible for:</p>
+        <ul>
+            <li>Price fluctuations between invoice creation and payment confirmation</li>
+            <li>Network congestion or delays on any supported blockchain</li>
+            <li>Incorrect wallet addresses provided by the merchant</li>
+            <li>Losses from unauthorized API key usage</li>
+        </ul>
+
+        <h2>6. Fees</h2>
+        <p>Transaction fees are charged as a percentage per successful payment, as outlined on our <a href="../../index.html#pricing" style="color:var(--accent-teal);">Pricing page</a>. Fees are deducted from the settlement amount before withdrawal. Network/gas fees for blockchain transactions are separate and borne by the platform unless otherwise stated.</p>
+
+        <h2>7. Disputes & Refunds</h2>
+        <p>Customers may raise disputes for fraudulent or incorrect transactions. When a dispute is raised, the corresponding funds are frozen and withdrawal is paused for the disputed amount. Merchants must respond within the designated deadline. Refunds, when approved, are sent to the customer's original wallet address.</p>
+
+        <h2>8. Prohibited Activities</h2>
+        <p>You may not use XCoinGateway for:</p>
+        <ul>
+            <li>Illegal goods or services in any jurisdiction</li>
+            <li>Money laundering, terrorism financing, or sanctions evasion</li>
+            <li>Fraudulent transactions or manipulation of payment flows</li>
+            <li>Unauthorized testing of security systems</li>
+            <li>Excessive API usage beyond rate limits without prior arrangement</li>
+        </ul>
+
+        <h2>9. Service Availability</h2>
+        <p>We strive for 99.9% platform uptime with multiple API providers per blockchain for redundancy. However, we do not guarantee uninterrupted service. Scheduled maintenance will be communicated in advance. During blockchain network congestion, transaction detection or confirmation may be delayed.</p>
+
+        <h2>10. Limitation of Liability</h2>
+        <p>XCoinGateway's total liability for any claim is limited to the fees paid by you in the 12 months preceding the claim. We are not liable for indirect, incidental, special, consequential, or punitive damages, including loss of profits, data, or business opportunities.</p>
+
+        <h2>11. Termination</h2>
+        <p>Either party may terminate the agreement with 30 days written notice. We may suspend or terminate your account immediately if you violate these terms or engage in prohibited activities. Upon termination, pending withdrawals will be processed and remaining balances settled to your registered wallet.</p>
+
+        <h2>12. Changes to Terms</h2>
+        <p>We reserve the right to modify these terms. Material changes will be communicated via email and take effect 30 days after notification. Continued use of the Platform after changes take effect constitutes acceptance of the updated terms.</p>
+
+        <h2>13. Governing Law</h2>
+        <p>These terms are governed by applicable law. Any disputes shall be resolved through binding arbitration, except where prohibited by local law.</p>
+
+        <h2>14. Contact</h2>
+        <p>For legal inquiries, contact us at <strong>legal@xcoingateway.com</strong>.</p>
+    </div>
+
+    <footer class="footer"><div class="container"><div class="footer-grid"><div class="footer-brand"><a href="../../index.html" class="nav-logo"><div class="logo-icon"><img src="../../assets/logo.png" alt="XCoinGateway Logo" width="38" height="38"></div><span class="logo-text">XCoin<span class="logo-highlight">Gateway</span></span></a><p class="footer-tagline">Multi-chain crypto payment infrastructure for modern businesses.</p></div><div class="footer-links-group"><h4>Product</h4><a href="../product/payment-gateway.html">Payment Gateway</a><a href="../product/invoicing.html">Invoicing</a><a href="../product/auto-sweep.html">Auto Sweep</a><a href="../product/withdrawals.html">Withdrawals</a><a href="../product/disputes.html">Dispute System</a></div><div class="footer-links-group"><h4>Developers</h4><a href="../developers/documentation.html">Documentation</a><a href="../developers/api-reference.html">API Reference</a><a href="../developers/sdks.html">SDKs</a><a href="../developers/webhooks.html">Webhooks</a><a href="../developers/status.html">Status Page</a></div><div class="footer-links-group"><h4>Company</h4><a href="../company/about.html">About</a><a href="../company/blog.html">Blog</a><a href="../company/careers.html">Careers</a><a href="../company/contact.html">Contact</a><a href="terms.html">Legal</a></div></div><div class="footer-bottom"><p>&copy; 2026 XCoinGateway. All rights reserved.</p><div class="footer-bottom-links"><a href="privacy.html">Privacy Policy</a><a href="terms.html">Terms of Service</a><a href="cookies.html">Cookie Policy</a></div></div></div></footer>
+    <script src="../../pages.js"></script>
+</body>
+</html>

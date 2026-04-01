@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Payment Gateway — XCoinGateway</title>
+    <meta name="description" content="Accept Bitcoin, Ethereum, USDT and 50+ cryptocurrencies on your website or app. Multi-chain payment gateway with instant USDT settlement.">
+    <link rel="icon" type="image/png" href="../../assets/favicon.png">
+    <link rel="stylesheet" href="../../pages.css">
+</head>
+<body>
+    <canvas id="particleCanvas"></canvas>
+    <div class="ambient-orb orb-1"></div><div class="ambient-orb orb-2"></div><div class="ambient-orb orb-3"></div>
+    <nav class="navbar" id="navbar"><div class="nav-container"><a href="../../index.html" class="nav-logo"><div class="logo-icon"><img src="../../assets/logo.png" alt="XCoinGateway Logo" width="38" height="38"></div><span class="logo-text">XCoin<span class="logo-highlight">Gateway</span></span></a><div class="nav-links"><a href="../../index.html#features" class="nav-link">Features</a><a href="../../index.html#how-it-works" class="nav-link">How It Works</a><a href="../../index.html#chains" class="nav-link">Chains</a><a href="../../index.html#security" class="nav-link">Security</a><a href="../../index.html#pricing" class="nav-link">Pricing</a><a href="../developers/documentation.html" class="nav-link">Developers</a></div><div class="nav-actions"><a href="../auth/login.html" class="btn-ghost">Log In</a><a href="../auth/register.html" class="btn-primary">Get Started</a></div><button class="mobile-toggle" id="mobileToggle" aria-label="Toggle menu"><span></span><span></span><span></span></button></div></nav>
+    <div class="mobile-menu" id="mobileMenu"><div class="mobile-menu-content"><a href="../../index.html#features" class="mobile-link">Features</a><a href="../../index.html#how-it-works" class="mobile-link">How It Works</a><a href="../../index.html#chains" class="mobile-link">Chains</a><a href="../../index.html#pricing" class="mobile-link">Pricing</a><a href="../developers/documentation.html" class="mobile-link">Developers</a><div class="mobile-actions"><a href="../auth/login.html" class="btn-ghost">Log In</a><a href="../auth/register.html" class="btn-primary">Get Started</a></div></div></div>
+
+    <section class="page-hero">
+        <div class="container">
+            <span class="section-tag reveal-up">Product</span>
+            <h1 class="reveal-up delay-1">Accept crypto payments<br><span class="gradient-text">on any platform</span></h1>
+            <p class="reveal-up delay-2">Integrate our payment gateway via API, plugins, or hosted checkout page. Support 50+ tokens across 8 blockchains with automatic USDT settlement.</p>
+            <div class="cta-actions reveal-up delay-3">
+                <a href="../auth/register.html" class="btn-primary btn-lg">Start Accepting Payments →</a>
+                <a href="../developers/documentation.html" class="btn-outline btn-lg">View Documentation</a>
+            </div>
+        </div>
+    </section>
+
+    <section class="page-section">
+        <div class="container">
+            <div class="info-grid reveal-up">
+                <div class="info-text">
+                    <h2>One integration, <span class="gradient-text">every chain</span></h2>
+                    <p>Connect once and accept payments from all major blockchains. Our REST API handles chain detection, payment monitoring, confirmation tracking, and settlement — so you don't have to.</p>
+                    <ul class="info-list">
+                        <li><span class="check">✓</span>Ethereum, BNB Chain, Polygon, Avalanche, Tron, Solana, Bitcoin, XRP</li>
+                        <li><span class="check">✓</span>50+ supported tokens including all major stablecoins</li>
+                        <li><span class="check">✓</span>Automatic chain detection and routing</li>
+                        <li><span class="check">✓</span>Real-time payment status via WebSocket or webhook</li>
+                        <li><span class="check">✓</span>Multiple API providers per chain for 99.9% uptime</li>
+                    </ul>
+                </div>
+                <div class="info-visual">
+                    <div class="code-block">
+                        <div class="code-header"><span class="code-dot red"></span><span class="code-dot yellow"></span><span class="code-dot green"></span><span class="code-lang">JavaScript</span></div>
+                        <pre><code><span class="code-key">const</span> payment = <span class="code-key">await</span> xcg.<span class="code-func">createPayment</span>({
+  price_amount: <span class="code-num">99.99</span>,
+  price_currency: <span class="code-val">'USD'</span>,
+  pay_currency: <span class="code-val">'ETH'</span>,
+  order_id: <span class="code-val">'ORD-7842'</span>,
+  ipn_callback_url: <span class="code-val">'https://you.com/hook'</span>
+});
+
+<span class="code-comment">// Redirect customer to payment</span>
+window.location = payment.payment_url;</code></pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="page-section">
+        <div class="container">
+            <h2 class="section-title-sm reveal-up" style="text-align:center;">Integration Options</h2>
+            <p class="section-desc reveal-up" style="text-align:center; max-width:600px; margin:0 auto 48px;">Choose the integration method that fits your stack. From no-code to full API control.</p>
+            <div class="feature-grid">
+                <div class="feature-box reveal-up delay-1">
+                    <div class="feature-box-icon">🔗</div>
+                    <h3>Hosted Checkout</h3>
+                    <p>Redirect customers to our secure hosted payment page. No frontend coding required — just create a payment and redirect with the URL we return.</p>
+                </div>
+                <div class="feature-box reveal-up delay-2">
+                    <div class="feature-box-icon">⚡</div>
+                    <h3>REST API</h3>
+                    <p>Full control over the payment experience. Create payments, track status, handle webhooks, and manage invoices programmatically. SDKs available for Node.js, Python, PHP, and Go.</p>
+                </div>
+                <div class="feature-box reveal-up delay-3">
+                    <div class="feature-box-icon">🧩</div>
+                    <h3>E-commerce Plugins</h3>
+                    <p>Pre-built plugins for WooCommerce, Shopify, Magento, and PrestaShop. Install, configure your API key, and start accepting crypto — no code needed.</p>
+                </div>
+                <div class="feature-box reveal-up delay-1">
+                    <div class="feature-box-icon">📱</div>
+                    <h3>Payment Links</h3>
+                    <p>Generate shareable payment links from your dashboard. Perfect for freelancers, invoicing clients, or accepting payments via social media and email.</p>
+                </div>
+                <div class="feature-box reveal-up delay-2">
+                    <div class="feature-box-icon">🪄</div>
+                    <h3>Embeddable Widget</h3>
+                    <p>Drop a lightweight JavaScript widget into your page for inline checkout. Customers pay without leaving your site — fully customizable to match your brand.</p>
+                </div>
+                <div class="feature-box reveal-up delay-3">
+                    <div class="feature-box-icon">🔔</div>
+                    <h3>Webhook Notifications</h3>
+                    <p>HMAC-signed webhook payloads notify your server in real-time on payment events — created, confirming, confirmed, expired, or failed.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="page-cta"><div class="container reveal-up"><h2>Start accepting crypto today</h2><p>Create a free account and integrate in under 10 minutes.</p><div class="cta-actions"><a href="../auth/register.html" class="btn-primary btn-lg">Create Free Account →</a><a href="../developers/api-reference.html" class="btn-outline btn-lg">API Reference</a></div></div></section>
+
+    <footer class="footer"><div class="container"><div class="footer-grid"><div class="footer-brand"><a href="../../index.html" class="nav-logo"><div class="logo-icon"><img src="../../assets/logo.png" alt="XCoinGateway Logo" width="38" height="38"></div><span class="logo-text">XCoin<span class="logo-highlight">Gateway</span></span></a><p class="footer-tagline">Multi-chain crypto payment infrastructure for modern businesses.</p></div><div class="footer-links-group"><h4>Product</h4><a href="payment-gateway.html">Payment Gateway</a><a href="invoicing.html">Invoicing</a><a href="auto-sweep.html">Auto Sweep</a><a href="withdrawals.html">Withdrawals</a><a href="disputes.html">Dispute System</a></div><div class="footer-links-group"><h4>Developers</h4><a href="../developers/documentation.html">Documentation</a><a href="../developers/api-reference.html">API Reference</a><a href="../developers/sdks.html">SDKs</a><a href="../developers/webhooks.html">Webhooks</a><a href="../developers/status.html">Status Page</a></div><div class="footer-links-group"><h4>Company</h4><a href="../company/about.html">About</a><a href="../company/blog.html">Blog</a><a href="../company/careers.html">Careers</a><a href="../company/contact.html">Contact</a><a href="../legal/terms.html">Legal</a></div></div><div class="footer-bottom"><p>&copy; 2026 XCoinGateway. All rights reserved.</p><div class="footer-bottom-links"><a href="../legal/privacy.html">Privacy Policy</a><a href="../legal/terms.html">Terms of Service</a><a href="../legal/cookies.html">Cookie Policy</a></div></div></div></footer>
+    <script src="../../pages.js"></script>
+</body>
+</html>

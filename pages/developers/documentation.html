@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Documentation — XCoinGateway</title>
+    <meta name="description" content="XCoinGateway developer documentation. Quick start guide, API overview, authentication, webhooks, and integration tutorials.">
+    <link rel="icon" type="image/png" href="../../assets/favicon.png">
+    <link rel="stylesheet" href="../../pages.css">
+</head>
+<body>
+    <canvas id="particleCanvas"></canvas>
+    <div class="ambient-orb orb-1"></div><div class="ambient-orb orb-2"></div><div class="ambient-orb orb-3"></div>
+    <nav class="navbar" id="navbar"><div class="nav-container"><a href="../../index.html" class="nav-logo"><div class="logo-icon"><img src="../../assets/logo.png" alt="XCoinGateway Logo" width="38" height="38"></div><span class="logo-text">XCoin<span class="logo-highlight">Gateway</span></span></a><div class="nav-links"><a href="../../index.html#features" class="nav-link">Features</a><a href="../../index.html#how-it-works" class="nav-link">How It Works</a><a href="../../index.html#chains" class="nav-link">Chains</a><a href="../../index.html#security" class="nav-link">Security</a><a href="../../index.html#pricing" class="nav-link">Pricing</a><a href="documentation.html" class="nav-link" style="color:var(--text-primary);">Developers</a></div><div class="nav-actions"><a href="../auth/login.html" class="btn-ghost">Log In</a><a href="../auth/register.html" class="btn-primary">Get Started</a></div><button class="mobile-toggle" id="mobileToggle" aria-label="Toggle menu"><span></span><span></span><span></span></button></div></nav>
+    <div class="mobile-menu" id="mobileMenu"><div class="mobile-menu-content"><a href="../../index.html#features" class="mobile-link">Features</a><a href="../../index.html#how-it-works" class="mobile-link">How It Works</a><a href="../../index.html#pricing" class="mobile-link">Pricing</a><a href="documentation.html" class="mobile-link">Developers</a><div class="mobile-actions"><a href="../auth/login.html" class="btn-ghost">Log In</a><a href="../auth/register.html" class="btn-primary">Get Started</a></div></div></div>
+
+    <section class="page-hero">
+        <div class="container">
+            <span class="section-tag reveal-up">Developers</span>
+            <h1 class="reveal-up delay-1">Developer<br><span class="gradient-text">Documentation</span></h1>
+            <p class="reveal-up delay-2">Everything you need to integrate XCoinGateway into your application. Guides, API reference, SDKs, and more.</p>
+        </div>
+    </section>
+
+    <section class="page-section">
+        <div class="container">
+            <div class="feature-grid">
+                <a href="api-reference.html" class="feature-box reveal-up delay-1" style="text-decoration:none;">
+                    <div class="feature-box-icon">📡</div>
+                    <h3>API Reference</h3>
+                    <p>Complete REST API documentation with endpoints, request/response examples, error codes, and authentication details.</p>
+                </a>
+                <a href="sdks.html" class="feature-box reveal-up delay-2" style="text-decoration:none;">
+                    <div class="feature-box-icon">📦</div>
+                    <h3>SDKs & Libraries</h3>
+                    <p>Official SDKs for Node.js, Python, PHP, Go, and Ruby. Install via package manager and start integrating in minutes.</p>
+                </a>
+                <a href="webhooks.html" class="feature-box reveal-up delay-3" style="text-decoration:none;">
+                    <div class="feature-box-icon">🔔</div>
+                    <h3>Webhooks</h3>
+                    <p>Real-time event notifications delivered to your server. HMAC-signed payloads, retry logic, and event type reference.</p>
+                </a>
+                <a href="status.html" class="feature-box reveal-up delay-1" style="text-decoration:none;">
+                    <div class="feature-box-icon">📊</div>
+                    <h3>Status Page</h3>
+                    <p>Live status of all XCoinGateway services, blockchain listeners, and API endpoints. Real-time uptime monitoring.</p>
+                </a>
+                <div class="feature-box reveal-up delay-2">
+                    <div class="feature-box-icon">🧪</div>
+                    <h3>Sandbox Environment</h3>
+                    <p>Test your integration with our testnet sandbox. No real funds required — simulate payments, webhooks, and edge cases safely.</p>
+                </div>
+                <div class="feature-box reveal-up delay-3">
+                    <div class="feature-box-icon">💬</div>
+                    <h3>Developer Support</h3>
+                    <p>Join our Discord developer community or email support@xcoingateway.com for integration help. Typical response time: under 2 hours.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Quick Start Guide -->
+    <section class="page-section">
+        <div class="container">
+            <h2 class="section-title-sm reveal-up">Quick Start Guide</h2>
+            <p class="section-desc reveal-up">Get your first payment working in 4 steps.</p>
+            <div class="info-grid reveal-up" style="margin-top:48px;">
+                <div class="info-text">
+                    <h3 style="margin-bottom:24px;">Step 1: Get your API key</h3>
+                    <p>Sign up at <a href="../auth/register.html" style="color:var(--accent-teal);">xcoingateway.com</a> and navigate to Settings → API Keys. Generate a new key and note the secret — you'll need both.</p>
+                    <h3 style="margin:32px 0 24px;">Step 2: Install the SDK</h3>
+                    <div class="code-block" style="margin-bottom:24px;">
+                        <div class="code-header"><span class="code-dot red"></span><span class="code-dot yellow"></span><span class="code-dot green"></span><span class="code-lang">Terminal</span></div>
+                        <pre><code><span class="code-comment"># Node.js</span>
+npm install @xcoingateway/sdk
+
+<span class="code-comment"># Python</span>
+pip install xcoingateway
+
+<span class="code-comment"># PHP</span>
+composer require xcoingateway/sdk</code></pre>
+                    </div>
+                    <h3 style="margin-bottom:24px;">Step 3: Create a payment</h3>
+                    <p>Use your API key to create a payment. The response includes a payment URL you can redirect your customer to.</p>
+                    <h3 style="margin:32px 0 24px;">Step 4: Handle the webhook</h3>
+                    <p>When the payment is confirmed, we'll send a signed webhook to your callback URL. Verify the HMAC signature and update your order status.</p>
+                </div>
+                <div>
+                    <div class="code-block" style="margin-bottom:24px;">
+                        <div class="code-header"><span class="code-dot red"></span><span class="code-dot yellow"></span><span class="code-dot green"></span><span class="code-lang">JavaScript</span></div>
+                        <pre><code><span class="code-key">import</span> { XCoinGateway } <span class="code-key">from</span> <span class="code-val">'@xcoingateway/sdk'</span>;
+
+<span class="code-key">const</span> xcg = <span class="code-key">new</span> <span class="code-func">XCoinGateway</span>({
+  apiKey: <span class="code-val">'xcg_live_...'</span>,
+  secret: <span class="code-val">'xcg_secret_...'</span>
+});
+
+<span class="code-comment">// Create a payment</span>
+<span class="code-key">const</span> payment = <span class="code-key">await</span> xcg.<span class="code-func">createPayment</span>({
+  price_amount: <span class="code-num">99.99</span>,
+  price_currency: <span class="code-val">'USD'</span>,
+  order_id: <span class="code-val">'ORD-123'</span>,
+  ipn_callback_url:
+    <span class="code-val">'https://you.com/webhook'</span>
+});
+
+<span class="code-comment">// Redirect customer</span>
+res.<span class="code-func">redirect</span>(payment.payment_url);</code></pre>
+                    </div>
+                    <div class="code-block">
+                        <div class="code-header"><span class="code-dot red"></span><span class="code-dot yellow"></span><span class="code-dot green"></span><span class="code-lang">Webhook Handler</span></div>
+                        <pre><code>app.<span class="code-func">post</span>(<span class="code-val">'/webhook'</span>, (req, res) => {
+  <span class="code-key">const</span> isValid = xcg.<span class="code-func">verifyWebhook</span>(
+    req.body,
+    req.headers[<span class="code-val">'x-xcg-signature'</span>]
+  );
+
+  <span class="code-key">if</span> (isValid) {
+    <span class="code-comment">// Update order status</span>
+    <span class="code-func">updateOrder</span>(req.body.order_id,
+      req.body.status);
+  }
+  res.<span class="code-func">status</span>(<span class="code-num">200</span>).send(<span class="code-val">'OK'</span>);
+});</code></pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Authentication -->
+    <section class="page-section">
+        <div class="container">
+            <h2 class="section-title-sm reveal-up">Authentication</h2>
+            <p class="section-desc reveal-up">All API requests require authentication via your API key sent in the request header.</p>
+            <div class="code-block reveal-up" style="max-width:700px;">
+                <div class="code-header"><span class="code-dot red"></span><span class="code-dot yellow"></span><span class="code-dot green"></span><span class="code-lang">HTTP Headers</span></div>
+                <pre><code><span class="code-str">x-api-key</span>: xcg_live_7f3a8b2c...
+<span class="code-str">x-api-nonce</span>: 1711843200
+<span class="code-str">x-api-signature</span>: HMAC-SHA256(body + nonce, secret)
+<span class="code-str">Content-Type</span>: application/json</code></pre>
+            </div>
+            <p class="reveal-up" style="color:var(--text-secondary); margin-top:24px; font-size:0.9rem;">Every request must include a nonce (Unix timestamp) and HMAC-SHA256 signature for security. Requests with invalid or expired signatures are rejected.</p>
+        </div>
+    </section>
+
+    <section class="page-cta"><div class="container reveal-up"><h2>Ready to integrate?</h2><p>Create a free account and get your API keys in seconds.</p><div class="cta-actions"><a href="../auth/register.html" class="btn-primary btn-lg">Get API Keys →</a><a href="api-reference.html" class="btn-outline btn-lg">Full API Reference</a></div></div></section>
+
+    <footer class="footer"><div class="container"><div class="footer-grid"><div class="footer-brand"><a href="../../index.html" class="nav-logo"><div class="logo-icon"><img src="../../assets/logo.png" alt="XCoinGateway Logo" width="38" height="38"></div><span class="logo-text">XCoin<span class="logo-highlight">Gateway</span></span></a><p class="footer-tagline">Multi-chain crypto payment infrastructure for modern businesses.</p></div><div class="footer-links-group"><h4>Product</h4><a href="../product/payment-gateway.html">Payment Gateway</a><a href="../product/invoicing.html">Invoicing</a><a href="../product/auto-sweep.html">Auto Sweep</a><a href="../product/withdrawals.html">Withdrawals</a><a href="../product/disputes.html">Dispute System</a></div><div class="footer-links-group"><h4>Developers</h4><a href="documentation.html">Documentation</a><a href="api-reference.html">API Reference</a><a href="sdks.html">SDKs</a><a href="webhooks.html">Webhooks</a><a href="status.html">Status Page</a></div><div class="footer-links-group"><h4>Company</h4><a href="../company/about.html">About</a><a href="../company/blog.html">Blog</a><a href="../company/careers.html">Careers</a><a href="../company/contact.html">Contact</a><a href="../legal/terms.html">Legal</a></div></div><div class="footer-bottom"><p>&copy; 2026 XCoinGateway. All rights reserved.</p><div class="footer-bottom-links"><a href="../legal/privacy.html">Privacy Policy</a><a href="../legal/terms.html">Terms of Service</a><a href="../legal/cookies.html">Cookie Policy</a></div></div></div></footer>
+    <script src="../../pages.js"></script>
+</body>
+</html>
