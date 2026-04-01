@@ -2,7 +2,9 @@
 
 ## OVERVIEW
 
-A scalable, secure, and highly maintainable frontend architecture built using MERN (.jsx), focused on consistency, modularity, performance, and enterprise-grade UI/UX standards. The system supports dynamic theming, reusable components, real-time updates, and strict development protocols.
+A scalable, secure, and highly maintainable frontend architecture built using MERN (.jsx), focused on consistency, modularity, performance, and enterprise-grade UI/UX standards. The system supports dynamic theming, reusable components, real-time updates, and strict development protocols.\r
+\r
+MVP Network: Tron only (USDT TRC20). UI must display only Tron/USDT TRC20 as accepted payment method. Architecture must support adding more chains/tokens in the future without UI rewrites — use dynamic chain/token lists from backend API.
 
 ---
 

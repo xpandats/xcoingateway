@@ -1,286 +1,421 @@
-# Z++ CRYPTO PAYMENT GATEWAY - COMPLETE SYSTEM DESCRIPTION
+# XCOINGATEWAY — COMPLETE SYSTEM DESCRIPTION
+# Source of truth for all backend development
 
 ## OVERVIEW
 
-A multi-chain crypto payment gateway built on MERN stack (.jsx), using web node APIs (no full nodes), supporting Ethereum, BNB, Polygon, Avalanche, Tron, Solana, Bitcoin, and XRP. The system enables merchants to accept payments in multiple tokens while settling in USDT TRC20, with high security, scalability, and enterprise-grade architecture.
+A commercial, bank-grade crypto payment gateway built on MERN stack (.jsx), using free RPC endpoints and TronGrid API (no full nodes). MVP supports Tron network only (USDT TRC20) — architecture is chain-agnostic for future expansion to Ethereum, BNB, Polygon, Avalanche, Solana, Bitcoin, and XRP.
+
+The system enables merchants to accept USDT TRC20 payments with settlement in USDT TRC20. Zero budget — all services must use free tiers.
+
+Team: 2 people (developer + owner). All code must be heavily documented.
 
 ---
 
-## CORE ARCHITECTURE
+## CORE ARCHITECTURE (4 SECURITY ZONES)
 
-### 1. SYSTEM DESIGN
+### Zone 1 — Public (Internet-Facing)
+- API Gateway (Nginx) — only entry point to the system
+- TLS termination, rate limiting, WAF, IP filtering
+- Request validation BEFORE traffic reaches application
+- No application logic in this zone
 
-* Microservices-based architecture (no monolith)
-* Services:
+### Zone 2 — Application (Business Logic)
+- API Server (Auth, RBAC, Merchant, Invoices)
+- Blockchain Listener (TronGrid polling)
+- Matching Engine + Ledger
+- Withdrawal Processor (queue + validate)
+- Notification Service (webhooks, alerts)
+- Reconciliation Service (blockchain vs ledger comparison)
+- Fraud/Risk Engine (velocity limits, blacklists, risk scoring)
+- Health Monitor (service health, alert system)
 
-  * API Server (Auth, Merchant, User, Admin)
-  * Payment Processor
-  * Blockchain Listener
-  * Withdrawal Engine
-  * Sweep Engine
-  * Dispute System
-  * Notification/Webhook Service
-* Queue system (Redis/Kafka) for async operations
-* Stateless services for horizontal scalability
+### Zone 3 — Secure Vault (Maximum Isolation)
+- Transaction Signing Service
+  - NO HTTP endpoint
+  - Listens ONLY on internal Redis queue
+  - Decrypts key → signs transaction → zeroes memory
+  - Private keys NEVER leave this service
+  - Separate process, separate user, separate OS permissions
+- Key Vault
+  - AES-256-GCM encrypted keys stored in DB
+  - Master key from ENV variable (never in DB)
+  - Per-wallet key derivation
+  - Access logged + rate-limited
 
----
-
-### 2. WALLET MANAGEMENT
-
-* Admin adds child wallet addresses per chain/network
-* Private keys NEVER stored in plain format
-* Encryption:
-
-  * AES-256 encrypted private keys
-  * Master key stored in ENV (separate from DB)
-* Key isolation:
-
-  * DB stores encrypted keys
-  * Server handles decryption only when required
-* Wallet strategy:
-
-  * Child wallets receive deposits
-  * Auto-transfer to main wallet when threshold reached
-  * Max balance limit per child wallet
-* Gas management:
-
-  * Native token balance tracking per wallet
-  * Auto top-up system for gas fees
+### Zone 4 — Data (No Direct External Access)
+- MongoDB (encrypted at rest via Atlas)
+- Redis (queues, cache, pub/sub)
+- Audit Log Store (append-only, immutable, separate collection/DB)
 
 ---
 
-### 3. PAYMENT FLOW
+## SERVICES (8 TOTAL)
 
-1. Merchant creates invoice (USDT value only)
-2. Supported tokens displayed to user
-3. Unique deposit amount generated (per invoice)
-4. User sends payment to shared wallet address
-5. Blockchain listener detects transaction via APIs
-6. Matching engine validates:
+### 1. API SERVER
+- Authentication (register, login, logout, refresh)
+- JWT with short-lived access tokens (15 min) + HTTP-only refresh cookies
+- RBAC: admin, merchant, support — strict permission matrices
+- Merchant CRUD (onboarding, settings, API keys)
+- Invoice/Payment creation endpoint
+- Payment status endpoint
+- Admin panel API (wallet management, merchant management)
+- 2FA/TOTP (Google Authenticator) mandatory for admin, optional for merchants
+- IP whitelisting for admin panel access
+- API key generation with HMAC-SHA256 signature requirement
 
-   * Amount (unique match)
-   * Address
-   * Chain
-   * Timestamp window
-7. Transaction lifecycle:
+### 2. BLOCKCHAIN LISTENER
+- Polls TronGrid API every 3-5 seconds for new blocks
+- Fallback: Public Tron RPC node
+- Provider rotation: if primary fails → switch to secondary → alert
+- Detects incoming USDT TRC20 transfers to our wallet addresses
+- Publishes detected transactions to Redis queue
+- Tracks last scanned block (persisted — survives restart)
+- Stale block detection: if no new block in 30s → alert
+- Chain-agnostic adapter pattern:
+  - /adapters/base.js — abstract interface
+  - /adapters/tron.js — Tron implementation
+  - /adapters/evm.js — future EVM chains (ETH, BNB, Polygon, AVAX)
+  - Adding new chain = adding new adapter file only
 
-   * initiated
-   * pending
-   * hash_found
-   * confirmed
-   * success / failed / invalid
+### 3. MATCHING ENGINE (Heart of the System)
+- Consumes "transaction:detected" from Redis queue
+- Matches incoming transactions to active invoices by:
+  - Unique amount (decimal precision match)
+  - Wallet address (must be our wallet)
+  - Token type (USDT TRC20)
+  - Time window (invoice not expired)
+  - Not already matched (no duplicates)
+- Transaction lifecycle state machine:
+  - initiated → pending → hash_found → confirming → confirmed → success
+  - initiated → pending → expired (no payment received)
+  - initiated → pending → hash_found → failed (wrong amount, etc.)
+- Edge case handling:
+  - Underpayment: mark "underpaid", notify merchant, hold for manual review
+  - Overpayment: match for invoice amount, flag overpayment for manual review
+  - Late payment: invoice expired but payment arrives → DO NOT auto-match, flag for manual review
+  - Duplicate payment: same amount twice → match first, second to manual review
+  - Amount collision prevention: unique amount pool reservation system ensures no two active invoices have the same amount
 
----
+### 4. LEDGER (Double-Entry Accounting)
+- Every money movement creates TWO ledger entries (debit + credit)
+- Separate from blockchain data — this is YOUR internal accounting
+- Ensures:
+  - Balance consistency (sum of credits - debits = balance)
+  - Accurate refunds
+  - Audit capability
+  - Reconciliation possible
+- Every entry is immutable (append-only, no updates, no deletes)
+- Ledger accounts:
+  - merchant_receivable (money owed to merchant)
+  - platform_fee (our revenue)
+  - merchant_withdrawal (money sent to merchant)
+  - dispute_hold (frozen funds under dispute)
 
-### 4. TRANSACTION MATCHING ENGINE
+### 5. WITHDRAWAL PROCESSOR
+- Processes withdrawal requests from queue
+- Validates:
+  - Sufficient balance (from ledger, not blockchain)
+  - Withdrawal address is registered and verified
+  - Rate limits not exceeded
+  - No active disputes on these funds
+  - Cooldown period respected
+- High-value withdrawals require manual admin approval
+- Sends signing request to Zone 3 (Signing Service)
+- After signed tx is broadcast, tracks confirmation
+- Updates ledger on confirmed withdrawal
+- Complete withdrawal history with tx hashes
 
-* Uses:
+### 6. NOTIFICATION SERVICE
+- Webhook delivery to merchants:
+  - HMAC-SHA256 signed payloads
+  - Events: payment.created, payment.detected, payment.confirmed, payment.failed, payment.expired, withdrawal.completed, dispute.opened, dispute.resolved
+  - Retry policy: immediate → 30s → 5min → 30min → 2h → 6h → failed
+  - Merchant must return HTTP 200 to acknowledge
+  - Dead letter queue for permanently failed webhooks
+  - Dashboard shows delivery history with response codes
+- System alerts:
+  - Email (free SMTP)
+  - Telegram bot (free)
+  - Triggered by: service down, low balance, stale blocks, suspicious activity, reconciliation mismatch
 
-  * Unique amount logic
-  * Address mapping
-  * Time window validation
-* Handles:
+### 7. RECONCILIATION SERVICE
+- Periodic job (every 15 minutes)
+- Compares actual on-chain balances vs internal ledger balances
+- If mismatch detected:
+  - Auto-pause withdrawals
+  - Alert admin immediately
+  - Log discrepancy with full details
+- Also reconciles: total received on-chain vs total matched invoices
+- Critical for trust and auditing
 
-  * Partial payments
-  * Overpayments
-  * Late transactions
-* Prevents:
-
-  * Duplicate matching
-  * Replay attacks
-
----
-
-### 5. INTERNAL LEDGER SYSTEM
-
-* Separate from blockchain data
-* Double-entry accounting model
-* Ensures:
-
-  * Balance consistency
-  * Accurate refunds
-  * Audit capability
-* Every transaction recorded immutably
-
----
-
-### 6. AUTO SWEEP SYSTEM
-
-* Converts incoming tokens to USDT TRC20
-* Uses third-party provider APIs
-* Admin controls:
-
-  * Provider selection
-  * Fees and charges
-* Charges included internally (hidden from user)
-* Merchant sees full breakdown
-
----
-
-### 7. WITHDRAWAL SYSTEM
-
-* Automated withdrawal to merchant TRC20 wallet
-* Configurable:
-
-  * Time interval
-  * Minimum threshold
-  * Fees
-* Flow:
-
-  * Request → Queue → Validation → Signing → Broadcast
-* Security:
-
-  * Rate limiting
-  * Manual approval for high-risk withdrawals
-  * Cooldown delays
-
----
-
-### 8. API SYSTEM (FOR MERCHANTS)
-
-* REST API for:
-
-  * Invoice creation
-  * Payment tracking
-  * Transaction status
-* Webhook system:
-
-  * Signed payloads (HMAC)
-  * Retry mechanism
-  * Event logging
-* Idempotency keys required for all requests
-
----
-
-### 9. SECURITY FRAMEWORK
-
-#### Key Security
-
-* No plaintext private keys
-* Encrypted storage (AES-256)
-* Key usage only during signing
-* Optional key sharding
-
-#### API Security
-
-* HMAC signature validation
-* Nonce + timestamp validation
-* Rate limiting (per IP + API key)
-
-#### System Security
-
-* Role-based access control (RBAC)
-* Admin privilege isolation
-* Audit logs (append-only)
-* Input validation and sanitization
+### 8. SIGNING SERVICE (Zone 3 — Isolated)
+- NO HTTP endpoint — completely isolated
+- Listens ONLY on internal Redis queue for signing requests
+- Flow:
+  1. Receive signing request from queue
+  2. Validate request (signed by Withdrawal Processor)
+  3. Decrypt private key from Key Vault (AES-256-GCM)
+  4. Sign transaction with TronWeb
+  5. Zero private key from memory immediately
+  6. Broadcast signed transaction to Tron network
+  7. Return tx hash to queue
+- Rate-limited: max N signing operations per minute
+- All operations logged to audit trail
 
 ---
 
-### 10. BLOCKCHAIN INFRASTRUCTURE
+## WALLET STRATEGY
 
-* Uses multiple web API providers per chain
-* Fallback system for redundancy
-* Handles:
+### Hot Wallet
+- Small balance (configurable max, e.g., 500 USDT)
+- Used for automated withdrawals
+- Keys encrypted in DB (AES-256-GCM), decrypted only by Signing Service
+- Auto-sweep to cold wallet when threshold reached
 
-  * API failures
-  * Chain re-orgs
-* Confirmation tracking per chain
+### Cold Wallet
+- Bulk funds storage
+- Keys OFFLINE (paper/hardware wallet)
+- Manual transfer only — no automated access
+- Admin manually triggers transfer from hot → cold
 
----
-
-### 11. DISPUTE & REFUND SYSTEM
-
-* Users can:
-
-  * Report fraud
-  * Raise disputes
-* Funds marked as "disputed"
-* Auto-withdrawal paused for disputed funds
-* Admin controls:
-
-  * Refund approval
-  * Merchant/user response deadlines
-* Refunds sent to original wallet
+### Wallet Pool
+- Admin adds wallet addresses via admin panel
+- Each wallet address is assigned to receive payments
+- Multiple wallets possible for load distribution
+- Wallet rotation to avoid single point of failure
 
 ---
 
-### 12. FRAUD PREVENTION
+## PAYMENT FLOW (Step by Step)
 
-* Velocity limits (transaction frequency)
-* Wallet risk scoring
-* Blacklist/whitelist system
-* IP and geo anomaly detection
-
----
-
-### 13. GAS & FEE MANAGEMENT
-
-* Tracks native token balances per chain
-* Auto-refill mechanism
-* Fee estimation before transaction execution
-
----
-
-### 14. LOGGING & MONITORING
-
-* All actions logged:
-
-  * Transactions
-  * Withdrawals
-  * Admin operations
-* Immutable logs (no modification)
-* Real-time alerts for:
-
-  * Failures
-  * Low balances
-  * Suspicious activity
+1. Merchant calls POST /api/v1/payments (or creates via dashboard)
+2. System generates unique USDT amount (e.g., 150.000347) — guaranteed unique among active invoices
+3. System assigns a receiving wallet address
+4. Payment page shown to customer: "Send 150.000347 USDT TRC20 to TRx7...9kF2"
+5. Customer sends USDT from their wallet
+6. [Blockchain Listener] detects incoming USDT transfer via TronGrid
+7. Publishes to Redis: "transaction:detected"
+8. [Matching Engine] consumes event, tries to match:
+   - Amount matches active invoice? (unique decimal)
+   - Correct wallet address? 
+   - Within time window? (not expired)
+   - Not already matched?
+9. If matched → update state to "confirmed" → "success"
+10. [Matching Engine] publishes: "payment:confirmed"
+11. [Notification Service] sends HMAC-signed webhook to merchant callback URL
+12. [Ledger] records: debit merchant_receivable, credit platform_fee (for our fee)
+13. Funds sit in hot wallet until withdrawal
+14. [Withdrawal Engine] on schedule/threshold: processes withdrawal to merchant's TRC20 address
+15. [Signing Service] signs tx → broadcasts → confirmed
+16. [Ledger] records: debit merchant_withdrawal
 
 ---
 
-### 15. DATABASE DESIGN (MONGODB)
+## UNIQUE AMOUNT GENERATION
 
-* Uses transactions (ACID where required)
-* Collections:
-
-  * users
-  * merchants
-  * wallets
-  * transactions
-  * ledger
-  * withdrawals
-  * disputes
-* Indexing for performance
-* No sensitive data stored unencrypted
+- Invoice amount in USDT (e.g., $150.00)
+- System adds unique decimal offset (e.g., +0.000347)
+- Final amount: 150.000347 USDT
+- This offset is reserved — no other active invoice can have same final amount
+- Offset range: 0.000001 to 0.009999 (10,000 possible concurrent invoices per base amount)
+- Reservation expires when invoice expires
+- Prevents amount collision attacks
 
 ---
 
-### 16. SCALABILITY
+## TRON ENERGY/BANDWIDTH MANAGEMENT
 
-* Horizontal scaling (stateless services)
-* Load balancers
-* Queue-based async processing
-* Modular service expansion
+Sending USDT TRC20 on Tron requires "Energy":
+- If wallet has enough Energy → FREE transaction
+- If wallet has NO Energy → Burns TRX as fee ($3-8 per tx)
+- Energy obtained by freezing/staking TRX
 
----
-
-### 17. BACKUP & RECOVERY
-
-* Regular encrypted backups
-* Disaster recovery plan
-* Key recovery mechanism
-* Rollback capability for DB
+Strategy for MVP:
+- Freeze TRX in hot wallet to get daily free Energy
+- Track energy balance before each withdrawal
+- If insufficient energy → queue withdrawal, alert admin
+- Future: integrate energy rental services for cheaper operations
 
 ---
 
-### 18. LIMITATIONS & INITIAL STRATEGY
+## FRAUD & RISK ENGINE
 
-* Start with limited chains (2–3)
-* Disable auto-sweep initially for stability
-* Gradually scale infrastructure
-* Strict merchant onboarding
+- Velocity limits: max transactions per merchant per hour/day (configurable)
+- Wallet blacklisting: OFAC sanctions list + internal blacklist
+- Risk scoring per transaction (amount, frequency, wallet history)
+- Suspicious patterns: sudden volume spike → auto-pause + alert
+- IP anomaly detection for admin/merchant logins
+- Geo-based restrictions (configurable per merchant)
+
+---
+
+## DISPUTE & REFUND SYSTEM
+
+- Customer/merchant can raise disputes
+- Disputed funds automatically frozen in ledger (dispute_hold account)
+- Withdrawal paused for disputed amounts
+- Both parties have deadlines to respond
+- Admin reviews evidence, makes decision
+- If refund approved → send USDT to original sender wallet
+- Complete audit trail for every dispute action
+- Not in MVP Phase 1, but architecture must support it from Day 1
+
+---
+
+## SECURITY FRAMEWORK
+
+### Key Security
+- No plaintext private keys anywhere
+- AES-256-GCM encryption with per-wallet IV/salt
+- Master key from ENV (never in DB, never in code)
+- Key usage only during signing (zeroed immediately after)
+- Signing service completely isolated (Zone 3)
+
+### API Security (Merchant-Facing)
+- HMAC-SHA256 signature on every request
+- Nonce + timestamp validation (prevent replay — 5 min window)
+- Rate limiting per API key (configurable)
+- IP whitelisting (optional, merchant-configurable)
+- Idempotency keys required for all write operations
+
+### Authentication
+- JWT access tokens: 15 min expiry
+- Refresh tokens: HTTP-only, secure, SameSite cookies
+- bcrypt with 12+ salt rounds
+- 2FA/TOTP mandatory for admin, optional for merchant
+- Account lockout after 5 failed attempts (15 min cooldown)
+- Device/IP change detection → re-authentication required
+
+### RBAC (Role-Based Access Control)
+- admin: full access, wallet management, merchant management, system config
+- merchant: own dashboard, own invoices, own withdrawals, own API keys
+- support: read-only access to transactions, can escalate disputes
+- No role can access another role's data
+
+### Audit Logging
+- Separate append-only store
+- Cannot be modified even by admin
+- Every entry: actor, action, timestamp, IP, user-agent, before_state, after_state
+- Logged actions: login, logout, API key creation, withdrawal request, wallet added, config changed, dispute action, etc.
+
+### Secrets Rotation
+- JWT secret: rotatable with key ID in token header (old tokens valid until expiry)
+- Master encryption key: rotation plan with re-encryption migration script
+- Merchant API keys: regeneratable, old key has 24h grace period
+- Internal service tokens: auto-rotate on schedule
+
+### Multi-Layer Encryption
+- Layer 1: TLS in transit (HTTPS everywhere)
+- Layer 2: MongoDB encryption at rest (Atlas)
+- Layer 3: Field-level encryption (private keys, API secrets, sensitive PII)
+- Layer 4: HMAC signatures on all inter-service queue messages
+
+---
+
+## INTER-SERVICE COMMUNICATION
+
+Services NEVER call each other via HTTP. All communication through Redis queues:
+
+API Server ──publish──→ [payment:created] ──consume──→ Blockchain Listener
+Blockchain Listener ──→ [transaction:detected] ──→ Matching Engine  
+Matching Engine ──→ [payment:confirmed] ──→ Notification Service
+Matching Engine ──→ [withdrawal:eligible] ──→ Withdrawal Processor
+Withdrawal Processor ──→ [signing:request] ──→ Signing Service (Zone 3)
+Signing Service ──→ [signing:complete] ──→ Withdrawal Processor
+
+Every queue message:
+- Has idempotency key
+- Is HMAC-signed by sender
+- Is logged to audit trail
+- Has TTL (time to live)
+- Failed messages go to dead letter queue
+
+---
+
+## GRACEFUL SHUTDOWN & RECOVERY
+
+- Every state change persisted to DB BEFORE next step
+- Idempotency keys on every operation (restart = same result, not duplicate)
+- Dead letter queues for failed messages (with alerts)
+- On startup, each service checks for "stuck" transactions and resumes
+- Circuit breakers: if TronGrid down → stop hammering, switch to backup, alert
+- Health checks: every service reports status (DB connected, Redis connected, last block scanned, queue depth)
+
+---
+
+## DATABASE DESIGN (MongoDB)
+
+### Collections
+- users (admin, merchant, support accounts)
+- merchants (business info, settings, API keys)
+- wallets (addresses, encrypted keys, balances, status)
+- invoices (payment requests, amounts, status, expiry)
+- transactions (blockchain data, matching results, lifecycle)
+- ledger_entries (double-entry accounting, immutable)
+- withdrawals (requests, status, tx hashes)
+- disputes (claims, evidence, resolution)
+- audit_logs (append-only, immutable)
+- webhook_deliveries (delivery attempts, responses)
+- system_config (global settings, feature flags)
+
+### Rules
+- ACID transactions where required (invoice creation + amount reservation)
+- Proper indexing for performance
+- No sensitive data stored unencrypted
+- Separate audit log collection (append-only)
+
+---
+
+## MONITORING & HEALTH
+
+Every service exposes internal health check:
+- Database connected?
+- Redis connected?
+- TronGrid reachable?
+- Last block scanned (stale detection)?
+- Queue depth (processing stuck)?
+- Memory/CPU within limits?
+
+Alert channels (free):
+- Email via free SMTP
+- Telegram bot
+- Dashboard indicators
+
+---
+
+## SCALABILITY
+
+- Horizontal scaling (stateless services)
+- Queue-based async processing (Redis/BullMQ)
+- Load balancers (Nginx)
+- Modular service expansion
+- Chain-agnostic adapter pattern (adding chain = adding file)
+- Docker containerization for all services
+
+---
+
+## BACKUP & RECOVERY
+
+- MongoDB Atlas: automated backups (free tier includes daily)
+- Manual backup scripts for self-hosted scenarios
+- Disaster recovery plan documented
+- Key recovery mechanism (master key backup procedure)
+- DB rollback capability
+
+---
+
+## LIMITATIONS & MVP STRATEGY
+
+- MVP: Tron network only (USDT TRC20)
+- Sweep engine disabled for MVP (not needed — single token)
+- Dispute system: architecture ready, implementation in Phase 4
+- Zero budget — free tier services only
+- Chain-agnostic architecture for easy scaling
+- Future chain roadmap: BNB → Ethereum → Polygon → Solana → others
+- Strict merchant onboarding (admin approval required)
 
 ---
 
 ## END GOAL
 
-A highly secure, scalable, multi-chain crypto payment gateway with enterprise-grade architecture, ensuring zero compromise on security, accurate accounting, and reliable transaction processing.
+A highly secure, scalable, commercial-grade crypto payment gateway with enterprise architecture, ensuring zero compromise on security, accurate double-entry accounting, reliable transaction processing, and complete audit trail for every operation.

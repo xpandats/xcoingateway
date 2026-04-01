@@ -1,10 +1,13 @@
-# Z++ ENVIRONMENT, NETWORK & DEPLOYMENT PROTOCOL (ENTERPRISE GRADE)
+# XCOINGATEWAY — ENVIRONMENT, NETWORK & DEPLOYMENT PROTOCOL
+# Source of truth for all infrastructure and deployment decisions
 
 ## OVERVIEW
 
-https://github.com/xpandats/xcoingateway.git
+Repository: https://github.com/xpandats/xcoingateway.git
+Budget: Zero — all services must use free tiers
+Team: 2 people (developer + owner)
 
-This protocol defines a structured, secure, and scalable approach for managing blockchain environments (testnet/mainnet), development lifecycle (localhost → staging → production), API handling, and Git workflows. The goal is zero-risk deployment, controlled releases, and enterprise-grade reliability.
+This protocol defines the structured, secure, and scalable approach for managing blockchain environments, development lifecycle, API handling, deployment, and infrastructure. The goal is zero-risk deployment, controlled releases, and enterprise-grade reliability.
 
 ---
 
@@ -12,16 +15,17 @@ This protocol defines a structured, secure, and scalable approach for managing b
 
 ### Environments Defined
 
-* LOCAL (Developer machine)
-* DEV (Shared development server)
-* STAGING (Pre-production testing)
-* PRODUCTION (Live system)
+* LOCAL — Developer machine (your PC)
+* DEV — Shared development (can be same as local for 2-person team)
+* STAGING — Pre-production testing (MongoDB Atlas free tier)
+* PRODUCTION — Live system (VPS + MongoDB Atlas)
 
 ### Rules
 
 * Strict isolation between environments
 * No shared credentials across environments
-* Separate databases, APIs, and wallets per environment
+* Separate databases, API keys, and wallets per environment
+* Environment determined by: NODE_ENV + NETWORK_MODE
 
 ---
 
@@ -29,16 +33,18 @@ This protocol defines a structured, secure, and scalable approach for managing b
 
 ### Network Types
 
-* TESTNET (for development/testing)
-* MAINNET (for production)
+* TESTNET — Tron Shasta testnet (for development/testing)
+* MAINNET — Tron mainnet (for production only)
 
-### Supported Chains (Both Modes)
+### Supported Chains
 
+* Tron (MVP — ACTIVE)
+
+Future chains (architecture ready, not yet enabled):
+* BNB Chain (BSC) — next priority
 * Ethereum
-* BNB
 * Polygon
 * Avalanche
-* Tron
 * Solana
 * Bitcoin
 * XRP
@@ -46,39 +52,49 @@ This protocol defines a structured, secure, and scalable approach for managing b
 ### Rules
 
 * NEVER use mainnet during development
-* Each chain must have:
-
-  * Separate RPC/API endpoints (testnet/mainnet)
-  * Separate wallet pools
-* Environment-based switching:
-
-  * ENV variable controlled (NODE_ENV + NETWORK_MODE)
-
-Example:
-
-* NETWORK_MODE = TESTNET / MAINNET
+* Tron Shasta testnet for all dev/staging work
+* Environment-based switching via ENV variables:
+  - NETWORK_MODE=TESTNET (dev/staging)
+  - NETWORK_MODE=MAINNET (production only)
+* Separate wallet pools per environment (testnet wallets ≠ mainnet wallets)
 
 ---
 
 ## 3. API PROVIDER MANAGEMENT
 
-### Multi-Provider Strategy
+### MVP API Providers (Zero Budget)
 
-* Each chain must have:
+Tron Network:
+* Primary: TronGrid (free tier — 15 req/sec, no API key needed for basic, free key for higher limits)
+* Secondary: Public Tron full node RPC
 
-  * Primary API provider
-  * Secondary (fallback) provider
+Tron Shasta Testnet:
+* Primary: TronGrid Shasta endpoint
+* Secondary: Public Shasta RPC
 
-### Rules
+### Provider Rotation System
 
-* Automatic failover if API fails
-* Health check system for APIs
-* Rate limit tracking per provider
+* Automatic failover if primary API fails (timeout, 5xx, rate limited)
+* Health check every 30 seconds per provider
+* Rate limit tracking (stay under free tier limits)
+* Provider status logged (up/down/degraded)
+* Alert on failover event
 
-### Environment Separation
+### Chain-Agnostic Adapter Pattern
 
-* Testnet APIs used in DEV/STAGING
-* Mainnet APIs used ONLY in PRODUCTION
+* Each chain has its own adapter file implementing a common interface
+* Adding new chain = adding new adapter + config
+* No changes to core business logic when adding chains
+
+### Future Providers (When Scaling)
+
+BNB Chain (BSC):
+* Primary: Public RPC (https://bsc-dataseed.binance.org — free, no key)
+* Secondary: Ankr free tier
+
+Ethereum:
+* Primary: Alchemy free tier (300M compute units/month)
+* Secondary: Infura free tier (100k req/day)
 
 ---
 
@@ -86,37 +102,44 @@ Example:
 
 ### Per Environment
 
-* Separate wallet pools:
-
-  * DEV wallets
-  * STAGING wallets
-  * PRODUCTION wallets
+* LOCAL/DEV wallets — Tron Shasta testnet wallets (test TRX from faucet)
+* STAGING wallets — Tron Shasta testnet wallets (separate from dev)
+* PRODUCTION wallets — Tron Mainnet wallets (real funds)
 
 ### Rules
 
 * No reuse of wallet addresses across environments
 * Testnet wallets must NEVER hold real funds
 * Production wallets must be monitored strictly
+* Hot wallet max balance enforced
+* Cold wallet for bulk storage (manual, keys offline)
 
 ---
 
-## 5. LOCAL DEVELOPMENT (LOCALHOST)
+## 5. LOCAL DEVELOPMENT SETUP
 
-### Setup
+### Requirements
 
-* Local MongoDB instance
-* Mock or testnet APIs
-* Environment file (.env.local)
+* Node.js 20+
+* MongoDB (local instance or Atlas free tier)
+* Redis (local instance)
+* npm workspaces (monorepo)
+
+### Configuration
+
+* Environment file: .env.local
+* MongoDB: local instance (mongodb://localhost:27017/xcoingateway_dev)
+* Redis: local instance (redis://localhost:6379)
+* Network: Tron Shasta testnet
+* Debug logging: enabled (verbose)
+* All services run locally via npm scripts
 
 ### Rules
 
 * No production keys on local machine
-* Use sandbox/testnet data only
-* Debug logging enabled
-
-### Developer Protocol
-
-* Feature branches only
+* Use Tron Shasta testnet data only
+* Test with faucet TRX/USDT
+* Feature branches only (never commit to main directly)
 * Local testing mandatory before push
 
 ---
@@ -125,22 +148,28 @@ Example:
 
 ### Branch Strategy
 
-* main → production-ready code
-* staging → pre-production testing
-* develop → active development
-* feature/* → new features
-* hotfix/* → urgent fixes
+* master — production-ready code (protected)
+* staging — pre-production testing
+* develop — active development
+* feature/* — new features (branch from develop)
+* hotfix/* — urgent production fixes (branch from master)
 
 ### Rules
 
-* No direct commits to main
-* Pull request (PR) required for merge
-* Code review mandatory
+* No direct commits to master
+* Pull request required for all merges
+* Code review mandatory (even for 2-person team — review each other's work)
+* Squash merge to keep history clean
 
 ### Commit Standards
 
-* Clear commit messages
-* No sensitive data in commits
+* Clear, descriptive commit messages
+* Format: type(scope): description
+  - feat(auth): add TOTP 2FA for admin login
+  - fix(matching): handle underpayment edge case
+  - security(vault): add key zeroing after signing
+* No sensitive data in commits (keys, passwords, etc.)
+* .gitignore must include: .env*, node_modules, dist, logs
 
 ---
 
@@ -148,36 +177,82 @@ Example:
 
 ### Flow
 
-1. Code pushed to develop → DEV deployment
-2. Merge to staging → STAGING deployment
-3. Merge to main → PRODUCTION deployment
+1. Push to feature/* → automated lint + test
+2. Merge to develop → DEV build + test
+3. Merge to staging → STAGING deployment + integration tests
+4. Merge to master → PRODUCTION deployment (manual approval required)
 
 ### Automation
 
-* Build + test on every push
-* Linting + security checks
-* Automated deployment scripts
+* Lint (ESLint) on every push
+* Unit tests on every push
+* Security audit (npm audit) on every push
+* Docker build on merge to staging/master
+
+### Production Deployment
+
+* Docker containers for all services
+* docker-compose for orchestration
+* Rolling updates (zero downtime)
+* Manual approval gate before production deploy
 
 ---
 
 ## 8. CONFIGURATION MANAGEMENT
 
-### Environment Variables
+### Environment Variables (per environment)
 
-* Stored securely (.env files, secrets manager)
-* Separate configs per environment
+```
+# Core
+NODE_ENV=development|staging|production
+NETWORK_MODE=TESTNET|MAINNET
+PORT=3001
 
-### Example Variables
+# Database
+MONGODB_URI=mongodb+srv://...
+REDIS_URL=redis://localhost:6379
 
-* DB_URI
-* API_KEYS
-* NETWORK_MODE
-* WALLET_ENCRYPTION_KEY
+# Blockchain - Tron
+TRONGRID_API_URL=https://api.trongrid.io  (mainnet)
+TRONGRID_API_URL=https://api.shasta.trongrid.io  (testnet)
+TRONGRID_API_KEY=  (optional, for higher rate limits)
+TRON_RPC_FALLBACK=https://api.tronstack.io
+
+# Security
+JWT_ACCESS_SECRET=<random 64 char>
+JWT_REFRESH_SECRET=<random 64 char>
+JWT_ACCESS_EXPIRY=15m
+JWT_REFRESH_EXPIRY=7d
+MASTER_ENCRYPTION_KEY=<random 64 char hex>
+HMAC_SECRET=<random 64 char>
+BCRYPT_SALT_ROUNDS=12
+
+# Wallet
+HOT_WALLET_MAX_BALANCE=500
+COLD_WALLET_ADDRESS=<TRC20 address>
+
+# Webhooks
+WEBHOOK_RETRY_ATTEMPTS=6
+WEBHOOK_TIMEOUT_MS=10000
+
+# Admin
+ADMIN_IP_WHITELIST=<comma separated IPs>
+ADMIN_2FA_REQUIRED=true
+
+# Alerts
+TELEGRAM_BOT_TOKEN=<token>
+TELEGRAM_CHAT_ID=<chat_id>
+ALERT_EMAIL_FROM=alerts@xcoingateway.com
+ALERT_EMAIL_SMTP=<smtp config>
+```
 
 ### Rules
 
-* No hardcoded secrets in code
-* Rotation of keys periodically
+* No hardcoded secrets in code (EVER)
+* All secrets in .env files (never committed)
+* Separate .env per environment (.env.local, .env.staging, .env.production)
+* Key rotation schedule documented
+* .env.example committed with placeholder values
 
 ---
 
@@ -185,38 +260,69 @@ Example:
 
 ### Per Environment
 
-* Separate MongoDB instances
+* LOCAL: MongoDB on localhost (or Atlas free M0)
+* STAGING: MongoDB Atlas free tier (M0 — 512MB)
+* PRODUCTION: MongoDB Atlas M0 free initially → M10+ when revenue allows
+
+### MongoDB Atlas Free Tier Includes
+
+* 512MB storage
+* Shared cluster
+* Encryption at rest (automatic)
+* Daily backups
+* IP whitelisting
+* Free forever (M0)
 
 ### Rules
 
-* No production DB access from DEV
+* No production DB access from dev environment
+* IP whitelisting on Atlas (only app server IPs)
+* Separate database names per environment:
+  - xcoingateway_dev
+  - xcoingateway_staging
+  - xcoingateway_prod
 * Backups:
-
-  * DEV: optional
-  * STAGING: daily
-  * PRODUCTION: hourly + daily snapshots
+  - DEV: optional (local, development data)
+  - STAGING: Atlas auto-backup (daily)
+  - PRODUCTION: Atlas auto-backup + manual weekly export
+* Migration scripts for schema changes
 
 ---
 
-## 10. DEPLOYMENT STRATEGY
+## 10. DEPLOYMENT INFRASTRUCTURE
 
-### Stages
+### Development Phase (Current)
 
-* DEV → STAGING → PRODUCTION
+* Everything runs locally on developer machine
+* Local MongoDB + Local Redis
+* Tron Shasta testnet
+* No cloud costs
 
-### Rules
+### Staging Phase
 
-* No direct deployment to production
-* Staging must pass:
+* MongoDB Atlas free tier (M0)
+* Redis on same VPS or free Redis cloud (Redis Labs 30MB free)
+* Oracle Cloud free tier VPS (2 AMD VMs, 1GB RAM, always free)
+* OR Google Cloud $300 credit (90 days)
 
-  * Functional tests
-  * Security checks
-  * Performance validation
+### Production Phase (When Ready)
 
-### Rollback Plan
+* VPS: Hetzner (€10-20/month) or DigitalOcean ($24/month)
+  - Minimum: 4 vCPU, 8GB RAM, 160GB SSD
+* MongoDB Atlas: M0 free → M10 ($57/month) when scaling
+* Redis: local on VPS (free)
+* Docker + docker-compose for all services
+* Nginx reverse proxy (SSL, rate limiting)
+* UFW firewall: only ports 443 (HTTPS) + SSH open
+* Database ports NEVER exposed to internet
 
-* Versioned deployments
-* Instant rollback capability
+### Docker Setup
+
+* Each service has its own Dockerfile
+* docker-compose.yml orchestrates all services
+* docker-compose.dev.yml for local development
+* docker-compose.prod.yml for production
+* Health check built into each container
 
 ---
 
@@ -224,53 +330,108 @@ Example:
 
 ### Per Environment
 
-* DEV: verbose logs
-* STAGING: moderate logs
-* PRODUCTION: optimized logs
+* LOCAL/DEV: verbose/debug logs to console + file
+* STAGING: info level logs to file
+* PRODUCTION: warn/error to file, info to separate file, debug disabled
 
-### Monitoring
+### Log Format (Structured JSON)
 
-* API health
-* Blockchain listener status
-* Transaction success/failure rates
+```json
+{
+  "timestamp": "2026-04-01T12:00:00.000Z",
+  "level": "info",
+  "service": "matching-engine",
+  "action": "payment_matched",
+  "invoiceId": "inv_xxx",
+  "txHash": "abc123",
+  "amount": "150.000347",
+  "duration_ms": 45,
+  "requestId": "req_xxx"
+}
+```
+
+### Monitoring (Free Tools)
+
+* Service health endpoints (internal, not public)
+* Telegram bot alerts (free):
+  - Service down
+  - Reconciliation mismatch
+  - Low hot wallet balance
+  - Stale blockchain scanning
+  - High-value withdrawal pending
+  - Failed webhook delivery (after all retries)
+* Dashboard indicators in admin panel
 
 ---
 
 ## 12. SECURITY PROTOCOL
 
-### Access Control
+### Network Security
 
-* Role-based access (RBAC)
-* Limited access to production
+* All traffic over HTTPS (TLS 1.3)
+* Nginx as reverse proxy + rate limiter
+* UFW firewall: whitelist only
+* Admin panel: IP whitelisted
+* No database ports exposed
+* SSH: key-based only, password disabled
+
+### Application Security
+
+* Helmet.js for HTTP security headers
+* CORS: strict origin whitelist
+* CSP (Content Security Policy) headers
+* Rate limiting at Nginx AND application level
+* Request size limits
+* Input validation on every endpoint (Joi/Zod)
+* SQL/NoSQL injection prevention
+* XSS prevention
 
 ### Secrets Handling
 
-* Use secrets manager (preferred)
-* No exposure in frontend
-
-### Network Security
-
-* IP whitelisting (admin access)
-* Secure endpoints (HTTPS only)
+* .env files (never committed to git)
+* Production secrets: only on server, not in any repo
+* Rotation schedule:
+  - JWT secrets: every 90 days
+  - Master encryption key: annual (with migration)
+  - Merchant API keys: on merchant request
+  - Internal service tokens: every 30 days
 
 ---
 
 ## 13. TESTING STRATEGY
 
-### Types
+### Unit Tests
 
-* Unit testing (local)
-* Integration testing (DEV/STAGING)
-* End-to-end testing (STAGING)
+* Every service has unit tests
+* Business logic tested in isolation
+* Mocked external dependencies (TronGrid, Redis, MongoDB)
 
-### Blockchain Testing
+### Integration Tests
 
-* Use testnet transactions
+* Service-to-service communication tested
+* Database operations tested with test DB
+* Queue message flow tested
+
+### Blockchain Tests (Testnet)
+
+* Use Tron Shasta testnet
 * Simulate:
+  - Normal payment flow (happy path)
+  - Wrong amounts (underpayment, overpayment)
+  - Delayed transactions
+  - Expired invoices with late payment
+  - Duplicate transactions
+  - Multiple concurrent invoices
+  - Withdrawal flow
+  - Service restart mid-transaction (recovery)
 
-  * Delays
-  * Failures
-  * Re-orgs
+### Security Tests
+
+* HMAC signature validation tests
+* Rate limit enforcement tests
+* RBAC permission tests
+* Injection attempt tests
+* Authentication bypass attempt tests
 
 ---
 
@@ -278,60 +439,92 @@ Example:
 
 ### Versioning
 
-* Semantic versioning (v1.0.0)
+* Semantic versioning: v1.0.0 (major.minor.patch)
+* CHANGELOG.md maintained
 
-### Rules
+### Release Process
 
-* Release notes required
-* Migration scripts if DB changes
+1. Feature complete on develop branch
+2. Create release branch (release/v1.x.x)
+3. Staging deployment + full test suite
+4. Fix any issues on release branch
+5. Merge to master + tag
+6. Production deployment
+7. Post-deploy verification
+8. Update CHANGELOG.md
 
 ---
 
 ## 15. FAILURE HANDLING
 
-### Scenarios
+### Scenarios & Response
 
-* API failure
-* Blockchain delays
-* DB crash
+| Scenario | Response |
+|----------|----------|
+| TronGrid API down | Auto-switch to fallback RPC, alert admin |
+| MongoDB connection lost | Retry with backoff, queue pending operations, alert |
+| Redis down | Graceful degradation, alert (critical) |
+| Service crash | Docker auto-restart, startup recovery checks for stuck tx |
+| Signing service unresponsive | Queue withdrawal, alert (critical priority) |
+| Reconciliation mismatch | Auto-pause withdrawals, alert (critical priority) |
 
-### Strategy
+### Principles
 
-* Retry mechanisms
-* Fallback APIs
-* Graceful degradation
+* Retry with exponential backoff
+* Circuit breakers (stop hammering failed services)
+* Graceful degradation (partial functionality > total failure)
+* FAIL SAFE: if unsure → block transaction, never assume success
 
 ---
 
-## 16. SCALABILITY PLAN
+## 16. TRON-SPECIFIC CONSIDERATIONS
 
-### Infrastructure
+### Testnet (Shasta)
 
-* Load balancers
-* Containerization (Docker)
-* Horizontal scaling
+* Faucet: https://www.trongrid.io/shasta
+* Explorer: https://shasta.tronscan.org
+* Free test TRX available
+* USDT test tokens available on Shasta
 
-### Services
+### Mainnet
 
-* Independent scaling per service
-* Queue-based processing
+* TronGrid API: https://api.trongrid.io
+* Explorer: https://tronscan.org
+* USDT TRC20 contract: TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t
+* Block time: ~3 seconds
+* Confirmations required: 19 blocks (~1 minute)
+
+### Energy/Bandwidth
+
+* TRC20 transfer needs ~65,000 Energy
+* Options:
+  - Freeze TRX for free daily Energy
+  - Burn TRX as fee ($3-8 per tx)
+  - Energy rental (cheaper at volume)
+* Track energy balance before each withdrawal
+* Queue if insufficient, alert admin
 
 ---
 
 ## 17. PRODUCTION SAFETY RULES
 
 * No test code in production
-* No debug logs exposed
+* No debug logs exposed in production
 * Strict monitoring enabled
 * Real-time alerts active
+* Manual approval for first production deployment
+* Gradual rollout (limited merchants first)
+* Daily reconciliation checks
+* Weekly security review
 
 ---
 
 ## 18. FINAL GOAL
 
 A fully controlled, secure, and scalable environment setup ensuring:
-
 * Safe development lifecycle
 * Zero-risk production deployment
 * Clean separation of testnet and mainnet operations
 * High availability and reliability
+* Complete audit trail
+* Zero-budget launch with clear scaling path
