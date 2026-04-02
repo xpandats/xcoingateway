@@ -14,7 +14,9 @@ const { ErrorCodes } = require('./errors/codes');
 
 const fields = {
   email: Joi.string().email().trim().lowercase().max(255),
-  password: Joi.string().min(8).max(128),
+  password: Joi.string().min(8).max(128)
+    .regex(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?])/)
+    .message('Password must contain at least 1 uppercase, 1 lowercase, 1 digit, and 1 special character'),
   name: Joi.string().trim().min(1).max(100),
   businessName: Joi.string().trim().min(1).max(200),
   tronAddress: Joi.string().regex(/^T[a-zA-Z1-9]{33}$/).message('Invalid TRC20 address'),

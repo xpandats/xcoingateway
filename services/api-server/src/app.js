@@ -118,7 +118,13 @@ app.use((req, res, next) => {
 });
 
 // ─── Routes ──────────────────────────────────────────────────
-app.use('/api/v1/auth', authLimiter, authRoutes);
+// Auth rate limiter applied ONLY to brute-force-vulnerable endpoints
+// (login, register, refresh). Protected endpoints (/me, /change-password,
+// /logout) are already guarded by JWT and don't need the strict limit.
+app.use('/api/v1/auth/login', authLimiter);
+app.use('/api/v1/auth/register', authLimiter);
+app.use('/api/v1/auth/refresh', authLimiter);
+app.use('/api/v1/auth', authRoutes);
 app.use('/internal/health', healthRoutes);
 
 // ─── 404 Handler ─────────────────────────────────────────────

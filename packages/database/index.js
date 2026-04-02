@@ -14,6 +14,8 @@ const Dispute = require('./src/models/Dispute');
 const AuditLog = require('./src/models/AuditLog');
 const WebhookDelivery = require('./src/models/WebhookDelivery');
 const SystemConfig = require('./src/models/SystemConfig');
+const RefreshToken = require('./src/models/RefreshToken');
+const UsedTotpCode = require('./src/models/UsedTotpCode');
 
 module.exports = {
   connectDB,
@@ -30,4 +32,6 @@ module.exports = {
   AuditLog,
   WebhookDelivery,
   SystemConfig,
+  RefreshToken,
+  UsedTotpCode,
 };

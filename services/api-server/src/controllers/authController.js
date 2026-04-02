@@ -1,34 +1,40 @@
 'use strict';
 
 /**
- * Authentication Controller.
+ * Authentication Controller — Commercial Grade.
  *
- * Handles: register, login, logout, refresh, 2FA setup/verify/disable, profile.
+ * Handles: register, login, logout, refresh, changePassword,
+ *          2FA setup/verify/disable, profile.
  *
- * Security:
+ * Security features:
  *   - bcrypt password hashing (12+ rounds)
  *   - JWT access token (15 min) + HTTP-only refresh cookie (7 days)
- *   - Account lockout after 5 failed attempts
- *   - 2FA via TOTP (Google Authenticator)
- *   - Refresh token rotation (old token invalidated on use)
- *   - All actions audit-logged
+ *   - Account lockout after 5 failed attempts (auto-reset on expiry)
+ *   - 2FA via TOTP with replay prevention (each code used only once)
+ *   - Refresh token rotation with family tracking (stolen token detection)
+ *   - Password history (prevent reuse of last 5 passwords)
+ *   - Admin approval required for merchant accounts
+ *   - All actions audit-logged with requestId correlation
  */
 
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcrypt');
+const crypto = require('crypto');
 const { authenticator } = require('otplib');
-const { User } = require('@xcg/database');
-const { AuditLog } = require('@xcg/database');
+const { User, RefreshToken, UsedTotpCode, AuditLog } = require('@xcg/database');
 const { AppError, ErrorCodes, constants, validate, schemas } = require('@xcg/common');
 const { encrypt, decrypt, randomHex } = require('@xcg/crypto');
-const { createLogger } = require('@xcg/logger');
-const { createAuditLogger } = require('@xcg/logger');
+const { createLogger, createAuditLogger } = require('@xcg/logger');
 const { config } = require('../config');
 
 const logger = createLogger('auth');
 const audit = createAuditLogger(AuditLog);
 
-// ─── Helper: Generate JWT tokens ─────────────────────────────
+// Max active refresh tokens per user (limits concurrent sessions)
+const MAX_SESSIONS_PER_USER = 5;
+const PASSWORD_HISTORY_SIZE = 5;
+
+// ─── Helper: Generate JWT access token ───────────────────────
 
 function generateAccessToken(user) {
   return jwt.sign(
@@ -39,28 +45,35 @@ function generateAccessToken(user) {
       merchantId: user.merchantId?.toString() || null,
     },
     config.jwt.accessSecret,
-    { expiresIn: config.jwt.accessExpiry },
+    { expiresIn: config.jwt.accessExpiry, algorithm: 'HS256' },
   );
 }
 
-function generateRefreshToken() {
-  return randomHex(32); // 64 hex chars
+// ─── Helper: Refresh token ──────────────────────────────────
+
+function generateRefreshTokenValue() {
+  return randomHex(32); // 64 hex chars = 256 bits of entropy
 }
 
-function getRefreshExpiry() {
+function hashRefreshToken(token) {
+  // Use SHA-256 for refresh tokens (faster than bcrypt, sufficient for random tokens)
+  return crypto.createHash('sha256').update(token).digest('hex');
+}
+
+function getRefreshExpiryDate() {
   const days = parseInt(config.jwt.refreshExpiry, 10) || 7;
   return new Date(Date.now() + days * 24 * 60 * 60 * 1000);
 }
 
-// ─── Helper: Set refresh token cookie ────────────────────────
+// ─── Helper: Refresh cookie ─────────────────────────────────
 
 function setRefreshCookie(res, token) {
   res.cookie('refreshToken', token, {
-    httpOnly: true,     // Not accessible via JavaScript
-    secure: config.env === 'production',   // HTTPS only in production
-    sameSite: 'strict', // CSRF protection
-    path: '/api/v1/auth/refresh',   // Only sent to refresh endpoint
-    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+    httpOnly: true,
+    secure: config.env === 'production',
+    sameSite: 'strict',
+    path: '/api/v1/auth/refresh',
+    maxAge: 7 * 24 * 60 * 60 * 1000,
   });
 }
 
@@ -71,6 +84,45 @@ function clearRefreshCookie(res) {
     sameSite: 'strict',
     path: '/api/v1/auth/refresh',
   });
+}
+
+// ─── Helper: Audit log with requestId ───────────────────────
+
+async function auditLog(req, action, extra = {}) {
+  await audit.log({
+    actor: extra.actor || req.user?.userId || 'anonymous',
+    action,
+    ip: req.ip,
+    userAgent: req.get('user-agent'),
+    resource: extra.resource || 'user',
+    resourceId: extra.resourceId || req.user?.userId || null,
+    before: extra.before || null,
+    after: extra.after || null,
+    metadata: { requestId: req.requestId, ...extra.metadata },
+  });
+}
+
+// ─── Helper: Validate TOTP with replay prevention ───────────
+
+async function validateTOTP(userId, code, encryptedSecret) {
+  const secret = decrypt(encryptedSecret);
+  const isValid = authenticator.verify({ token: code, secret });
+
+  if (!isValid) {
+    return false;
+  }
+
+  // Check if code was already used (replay prevention)
+  try {
+    await UsedTotpCode.create({ userId, code, usedAt: new Date() });
+    return true;
+  } catch (err) {
+    // Duplicate key error = code already used within TTL window
+    if (err.code === 11000) {
+      return false;
+    }
+    throw err;
+  }
 }
 
 // ═════════════════════════════════════════════════════════════
@@ -90,30 +142,31 @@ exports.register = async (req, res, next) => {
     // Hash password
     const passwordHash = await bcrypt.hash(data.password, config.bcrypt.saltRounds);
 
-    // Create user (default role: merchant)
+    // Create user
+    // - Default role: merchant
+    // - isApproved: false (admin must approve before merchant can operate)
+    // - Store initial password in history
     const user = await User.create({
       email: data.email,
       passwordHash,
       firstName: data.firstName,
       lastName: data.lastName,
       role: constants.ROLES.MERCHANT,
+      isApproved: false,
+      passwordHistory: [passwordHash],
     });
 
-    // Audit log
-    await audit.log({
+    await auditLog(req, constants.AUDIT_ACTIONS.AUTH_REGISTER, {
       actor: user._id.toString(),
-      action: constants.AUDIT_ACTIONS.AUTH_REGISTER,
-      ip: req.ip,
-      userAgent: req.get('user-agent'),
-      resource: 'user',
       resourceId: user._id.toString(),
     });
 
-    logger.info('User registered', { userId: user._id, email: data.email });
+    logger.info('User registered (pending approval)', { userId: user._id, email: data.email });
 
     res.status(201).json({
       success: true,
       data: user.toSafeJSON(),
+      message: 'Account created. Pending admin approval before you can operate.',
     });
 
   } catch (err) {
@@ -129,55 +182,65 @@ exports.login = async (req, res, next) => {
   try {
     const data = validate(schemas.auth.login, req.body);
 
-    // Find user
+    // Find user (include passwordHash for comparison)
     const user = await User.findOne({ email: data.email });
     if (!user) {
+      // Same error message for wrong email vs wrong password (prevent enumeration)
       throw AppError.unauthorized('Invalid credentials', ErrorCodes.AUTH_INVALID_CREDENTIALS);
     }
 
     // Check if account is disabled
     if (!user.isActive) {
+      await auditLog(req, constants.AUDIT_ACTIONS.AUTH_LOGIN_FAILED, {
+        actor: user._id.toString(),
+        resourceId: user._id.toString(),
+        metadata: { reason: 'account_disabled' },
+      });
       throw AppError.unauthorized('Account is disabled', ErrorCodes.AUTH_ACCOUNT_DISABLED);
     }
 
     // Check if account is locked
-    if (user.isLocked) {
+    if (user.lockUntil && user.lockUntil > Date.now()) {
+      await auditLog(req, constants.AUDIT_ACTIONS.AUTH_LOGIN_FAILED, {
+        actor: user._id.toString(),
+        resourceId: user._id.toString(),
+        metadata: { reason: 'account_locked' },
+      });
       throw AppError.unauthorized(
         'Account is locked due to too many failed attempts. Try again later.',
         ErrorCodes.AUTH_ACCOUNT_LOCKED,
       );
     }
 
+    // If lock has expired, reset attempts
+    if (user.lockUntil && user.lockUntil <= Date.now()) {
+      user.failedLoginAttempts = 0;
+      user.lockUntil = null;
+    }
+
     // Verify password
     const isValid = await bcrypt.compare(data.password, user.passwordHash);
     if (!isValid) {
-      // Increment failed attempts
       user.failedLoginAttempts += 1;
 
-      // Lock account after 5 failures
       if (user.failedLoginAttempts >= 5) {
         user.lockUntil = new Date(Date.now() + config.rateLimit.authLockoutMs);
 
-        await audit.log({
+        await auditLog(req, constants.AUDIT_ACTIONS.AUTH_ACCOUNT_LOCKED, {
           actor: user._id.toString(),
-          action: constants.AUDIT_ACTIONS.AUTH_ACCOUNT_LOCKED,
-          ip: req.ip,
-          userAgent: req.get('user-agent'),
-          resource: 'user',
           resourceId: user._id.toString(),
-          metadata: { reason: 'Too many failed login attempts' },
+          metadata: { attempts: user.failedLoginAttempts },
         });
+
+        logger.warn('Account locked', { userId: user._id, attempts: user.failedLoginAttempts });
       }
 
       await user.save();
 
-      await audit.log({
+      await auditLog(req, constants.AUDIT_ACTIONS.AUTH_LOGIN_FAILED, {
         actor: user._id.toString(),
-        action: constants.AUDIT_ACTIONS.AUTH_LOGIN_FAILED,
-        ip: req.ip,
-        userAgent: req.get('user-agent'),
-        resource: 'user',
         resourceId: user._id.toString(),
+        metadata: { reason: 'invalid_password', attempts: user.failedLoginAttempts },
       });
 
       throw AppError.unauthorized('Invalid credentials', ErrorCodes.AUTH_INVALID_CREDENTIALS);
@@ -189,50 +252,64 @@ exports.login = async (req, res, next) => {
         throw AppError.unauthorized('2FA code required', ErrorCodes.AUTH_2FA_REQUIRED);
       }
 
-      // Decrypt 2FA secret
-      const secret = decrypt(user.twoFactorSecret);
-      const isValidTotp = authenticator.verify({ token: data.totpCode, secret });
-
+      const isValidTotp = await validateTOTP(user._id, data.totpCode, user.twoFactorSecret);
       if (!isValidTotp) {
-        throw AppError.unauthorized('Invalid 2FA code', ErrorCodes.AUTH_2FA_INVALID);
+        throw AppError.unauthorized('Invalid or already used 2FA code', ErrorCodes.AUTH_2FA_INVALID);
       }
     }
 
-    // Reset failed attempts on successful login
+    // ── Login success ──
+
+    // Reset failed attempts
     user.failedLoginAttempts = 0;
     user.lockUntil = null;
     user.lastLoginAt = new Date();
     user.lastLoginIp = req.ip;
+    await user.save();
 
     // Generate tokens
     const accessToken = generateAccessToken(user);
-    const refreshToken = generateRefreshToken();
-    const refreshTokenHash = await bcrypt.hash(refreshToken, 10);
+    const refreshTokenValue = generateRefreshTokenValue();
+    const refreshTokenHash = hashRefreshToken(refreshTokenValue);
+    const tokenFamily = randomHex(16); // Family for reuse detection
 
-    // Store refresh token (limit to 5 active sessions)
-    if (user.refreshTokens.length >= 5) {
-      user.refreshTokens.shift(); // Remove oldest
+    // Enforce max sessions: remove oldest if at limit
+    const activeTokenCount = await RefreshToken.countDocuments({
+      userId: user._id,
+      isRevoked: false,
+      expiresAt: { $gt: new Date() },
+    });
+
+    if (activeTokenCount >= MAX_SESSIONS_PER_USER) {
+      // Revoke oldest session
+      const oldest = await RefreshToken.findOne({
+        userId: user._id,
+        isRevoked: false,
+      }).sort({ createdAt: 1 });
+
+      if (oldest) {
+        oldest.isRevoked = true;
+        oldest.revokedAt = new Date();
+        await oldest.save();
+      }
     }
 
-    user.refreshTokens.push({
+    // Store refresh token
+    await RefreshToken.create({
+      userId: user._id,
       tokenHash: refreshTokenHash,
       ip: req.ip,
       userAgent: req.get('user-agent'),
-      expiresAt: getRefreshExpiry(),
+      expiresAt: getRefreshExpiryDate(),
+      family: tokenFamily,
     });
 
-    await user.save();
+    // Set refresh token cookie
+    setRefreshCookie(res, refreshTokenValue);
 
-    // Set refresh token in HTTP-only cookie
-    setRefreshCookie(res, refreshToken);
-
-    // Audit log
-    await audit.log({
+    // Audit
+    await auditLog(req, constants.AUDIT_ACTIONS.AUTH_LOGIN_SUCCESS, {
       actor: user._id.toString(),
-      action: constants.AUDIT_ACTIONS.AUTH_LOGIN_SUCCESS,
-      ip: req.ip,
-      userAgent: req.get('user-agent'),
-      resource: 'user',
       resourceId: user._id.toString(),
     });
 
@@ -258,35 +335,47 @@ exports.login = async (req, res, next) => {
 
 exports.logout = async (req, res, next) => {
   try {
-    const refreshToken = req.cookies.refreshToken;
+    const refreshTokenValue = req.cookies.refreshToken;
 
-    if (refreshToken) {
-      // Remove the specific refresh token
-      const user = await User.findById(req.user.userId);
-      if (user) {
-        // Find and remove matching token
-        const tokensBefore = user.refreshTokens.length;
-        user.refreshTokens = user.refreshTokens.filter((rt) => {
-          return !bcrypt.compareSync(refreshToken, rt.tokenHash);
-        });
-        if (user.refreshTokens.length !== tokensBefore) {
-          await user.save();
-        }
-      }
+    if (refreshTokenValue) {
+      const tokenHash = hashRefreshToken(refreshTokenValue);
+      // Revoke the specific token (O(1) lookup via indexed hash)
+      await RefreshToken.updateOne(
+        { tokenHash, isRevoked: false },
+        { $set: { isRevoked: true, revokedAt: new Date() } },
+      );
     }
 
     clearRefreshCookie(res);
 
-    await audit.log({
-      actor: req.user.userId,
-      action: constants.AUDIT_ACTIONS.AUTH_LOGOUT,
-      ip: req.ip,
-      userAgent: req.get('user-agent'),
-      resource: 'user',
-      resourceId: req.user.userId,
-    });
+    await auditLog(req, constants.AUDIT_ACTIONS.AUTH_LOGOUT);
 
     res.json({ success: true, message: 'Logged out successfully' });
+
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ═════════════════════════════════════════════════════════════
+// LOGOUT ALL SESSIONS
+// ═════════════════════════════════════════════════════════════
+
+exports.logoutAll = async (req, res, next) => {
+  try {
+    // Revoke ALL refresh tokens for this user
+    await RefreshToken.updateMany(
+      { userId: req.user.userId, isRevoked: false },
+      { $set: { isRevoked: true, revokedAt: new Date() } },
+    );
+
+    clearRefreshCookie(res);
+
+    await auditLog(req, constants.AUDIT_ACTIONS.AUTH_LOGOUT, {
+      metadata: { scope: 'all_sessions' },
+    });
+
+    res.json({ success: true, message: 'All sessions terminated' });
 
   } catch (err) {
     next(err);
@@ -299,60 +388,89 @@ exports.logout = async (req, res, next) => {
 
 exports.refresh = async (req, res, next) => {
   try {
-    const refreshToken = req.cookies.refreshToken;
-    if (!refreshToken) {
+    const refreshTokenValue = req.cookies.refreshToken;
+    if (!refreshTokenValue) {
       throw AppError.unauthorized('Refresh token required', ErrorCodes.AUTH_REFRESH_INVALID);
     }
 
-    // Find user with matching refresh token
-    const users = await User.find({ 'refreshTokens.0': { $exists: true } });
-    let matchedUser = null;
-    let matchedTokenIndex = -1;
+    const tokenHash = hashRefreshToken(refreshTokenValue);
 
-    for (const user of users) {
-      for (let i = 0; i < user.refreshTokens.length; i++) {
-        const rt = user.refreshTokens[i];
-        if (await bcrypt.compare(refreshToken, rt.tokenHash)) {
-          // Check if expired
-          if (rt.expiresAt < new Date()) {
-            user.refreshTokens.splice(i, 1);
-            await user.save();
-            throw AppError.unauthorized('Refresh token expired', ErrorCodes.AUTH_REFRESH_EXPIRED);
-          }
-          matchedUser = user;
-          matchedTokenIndex = i;
-          break;
-        }
-      }
-      if (matchedUser) break;
-    }
+    // O(1) lookup via indexed tokenHash (not a full user scan)
+    const storedToken = await RefreshToken.findOne({ tokenHash });
 
-    if (!matchedUser) {
+    if (!storedToken) {
       throw AppError.unauthorized('Invalid refresh token', ErrorCodes.AUTH_REFRESH_INVALID);
     }
 
-    if (!matchedUser.isActive) {
+    // Check if token was revoked
+    if (storedToken.isRevoked) {
+      // SECURITY: If a revoked token is used, it means either:
+      // 1. The token was stolen and the real user already rotated it
+      // 2. An attacker is using a previously-valid token
+      // → Revoke the ENTIRE family to protect the user
+      logger.warn('Revoked refresh token reuse detected — revoking entire family', {
+        userId: storedToken.userId,
+        family: storedToken.family,
+      });
+
+      await RefreshToken.updateMany(
+        { family: storedToken.family },
+        { $set: { isRevoked: true, revokedAt: new Date() } },
+      );
+
+      await auditLog(req, constants.AUDIT_ACTIONS.AUTH_LOGIN_FAILED, {
+        actor: storedToken.userId.toString(),
+        resourceId: storedToken.userId.toString(),
+        metadata: { reason: 'refresh_token_reuse', family: storedToken.family },
+      });
+
+      throw AppError.unauthorized('Token reuse detected. All sessions revoked.', ErrorCodes.AUTH_REFRESH_INVALID);
+    }
+
+    // Check if expired
+    if (storedToken.expiresAt < new Date()) {
+      storedToken.isRevoked = true;
+      storedToken.revokedAt = new Date();
+      await storedToken.save();
+      throw AppError.unauthorized('Refresh token expired', ErrorCodes.AUTH_REFRESH_EXPIRED);
+    }
+
+    // Verify user is still active
+    const user = await User.findById(storedToken.userId);
+    if (!user || !user.isActive) {
+      storedToken.isRevoked = true;
+      storedToken.revokedAt = new Date();
+      await storedToken.save();
       throw AppError.unauthorized('Account is disabled', ErrorCodes.AUTH_ACCOUNT_DISABLED);
     }
 
-    // Token rotation: remove old, create new
-    matchedUser.refreshTokens.splice(matchedTokenIndex, 1);
+    // ── Token rotation ──
 
-    const newAccessToken = generateAccessToken(matchedUser);
-    const newRefreshToken = generateRefreshToken();
-    const newRefreshTokenHash = await bcrypt.hash(newRefreshToken, 10);
+    // Revoke the old token
+    storedToken.isRevoked = true;
+    storedToken.revokedAt = new Date();
 
-    matchedUser.refreshTokens.push({
-      tokenHash: newRefreshTokenHash,
+    // Create new token in the same family
+    const newRefreshTokenValue = generateRefreshTokenValue();
+    const newTokenHash = hashRefreshToken(newRefreshTokenValue);
+
+    storedToken.replacedByToken = newTokenHash;
+    await storedToken.save();
+
+    await RefreshToken.create({
+      userId: user._id,
+      tokenHash: newTokenHash,
       ip: req.ip,
       userAgent: req.get('user-agent'),
-      expiresAt: getRefreshExpiry(),
+      expiresAt: getRefreshExpiryDate(),
+      family: storedToken.family, // Same family for reuse detection
     });
 
-    await matchedUser.save();
+    // Generate new access token
+    const newAccessToken = generateAccessToken(user);
 
     // Set new refresh token cookie
-    setRefreshCookie(res, newRefreshToken);
+    setRefreshCookie(res, newRefreshTokenValue);
 
     res.json({
       success: true,
@@ -368,15 +486,86 @@ exports.refresh = async (req, res, next) => {
 };
 
 // ═════════════════════════════════════════════════════════════
+// CHANGE PASSWORD
+// ═════════════════════════════════════════════════════════════
+
+exports.changePassword = async (req, res, next) => {
+  try {
+    const data = validate(schemas.auth.changePassword, req.body);
+
+    const user = await User.findById(req.user.userId);
+    if (!user) throw AppError.notFound('User not found');
+
+    // Verify current password
+    const isValid = await bcrypt.compare(data.currentPassword, user.passwordHash);
+    if (!isValid) {
+      throw AppError.unauthorized('Current password is incorrect', ErrorCodes.AUTH_INVALID_CREDENTIALS);
+    }
+
+    // Check new password is not same as current
+    if (data.currentPassword === data.newPassword) {
+      throw AppError.badRequest('New password must be different from current password');
+    }
+
+    // Check password history (prevent reuse of last 5)
+    if (user.passwordHistory && user.passwordHistory.length > 0) {
+      for (const oldHash of user.passwordHistory) {
+        const isReused = await bcrypt.compare(data.newPassword, oldHash);
+        if (isReused) {
+          throw AppError.badRequest('Cannot reuse any of your last 5 passwords');
+        }
+      }
+    }
+
+    // Hash new password
+    const newHash = await bcrypt.hash(data.newPassword, config.bcrypt.saltRounds);
+
+    // Update user
+    const oldHash = user.passwordHash;
+    user.passwordHash = newHash;
+    user.passwordChangedAt = new Date();
+
+    // Update password history (keep last 5)
+    if (!user.passwordHistory) user.passwordHistory = [];
+    user.passwordHistory.push(newHash);
+    if (user.passwordHistory.length > PASSWORD_HISTORY_SIZE) {
+      user.passwordHistory = user.passwordHistory.slice(-PASSWORD_HISTORY_SIZE);
+    }
+
+    await user.save();
+
+    // Revoke all refresh tokens (force re-login on all devices)
+    await RefreshToken.updateMany(
+      { userId: user._id, isRevoked: false },
+      { $set: { isRevoked: true, revokedAt: new Date() } },
+    );
+
+    clearRefreshCookie(res);
+
+    await auditLog(req, constants.AUDIT_ACTIONS.AUTH_PASSWORD_CHANGED, {
+      metadata: { allSessionsRevoked: true },
+    });
+
+    logger.info('Password changed', { userId: req.user.userId });
+
+    res.json({
+      success: true,
+      message: 'Password changed. All sessions have been terminated. Please log in again.',
+    });
+
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ═════════════════════════════════════════════════════════════
 // GET ME (Profile)
 // ═════════════════════════════════════════════════════════════
 
 exports.me = async (req, res, next) => {
   try {
-    const user = await User.findById(req.user.userId).select('-refreshTokens -passwordHash -twoFactorSecret');
-    if (!user) {
-      throw AppError.notFound('User not found');
-    }
+    const user = await User.findById(req.user.userId);
+    if (!user) throw AppError.notFound('User not found');
 
     res.json({
       success: true,
@@ -405,16 +594,16 @@ exports.setup2FA = async (req, res, next) => {
     const secret = authenticator.generateSecret();
     const otpAuthUrl = authenticator.keyuri(user.email, 'XCoinGateway', secret);
 
-    // Encrypt and store (not enabled yet — user must verify first)
+    // Encrypt and store (not enabled yet — user must verify with a code first)
     user.twoFactorSecret = encrypt(secret);
     await user.save();
 
     res.json({
       success: true,
       data: {
-        secret,      // Show to user once (they'll enter it in their authenticator app)
-        otpAuthUrl,  // QR code URI
-        message: 'Scan QR code with your authenticator app, then verify with a code',
+        secret,      // Shown ONCE — user enters in their authenticator app
+        otpAuthUrl,  // QR code URI for scanning
+        warning: 'Save this secret securely. It will NOT be shown again.',
       },
     });
 
@@ -439,36 +628,24 @@ exports.verify2FA = async (req, res, next) => {
     }
 
     if (!user.twoFactorSecret) {
-      throw AppError.badRequest('2FA setup not initiated. Call /2fa/setup first.');
+      throw AppError.badRequest('2FA setup not initiated. Call POST /2fa/setup first.');
     }
 
-    // Decrypt and verify
-    const secret = decrypt(user.twoFactorSecret);
-    const isValid = authenticator.verify({ token: data.totpCode, secret });
-
+    // Validate with replay prevention
+    const isValid = await validateTOTP(user._id, data.totpCode, user.twoFactorSecret);
     if (!isValid) {
-      throw AppError.unauthorized('Invalid 2FA code', ErrorCodes.AUTH_2FA_INVALID);
+      throw AppError.unauthorized('Invalid or already used 2FA code', ErrorCodes.AUTH_2FA_INVALID);
     }
 
     // Enable 2FA
     user.twoFactorEnabled = true;
     await user.save();
 
-    await audit.log({
-      actor: req.user.userId,
-      action: constants.AUDIT_ACTIONS.AUTH_2FA_ENABLED,
-      ip: req.ip,
-      userAgent: req.get('user-agent'),
-      resource: 'user',
-      resourceId: req.user.userId,
-    });
+    await auditLog(req, constants.AUDIT_ACTIONS.AUTH_2FA_ENABLED);
 
     logger.info('2FA enabled', { userId: req.user.userId });
 
-    res.json({
-      success: true,
-      message: '2FA enabled successfully',
-    });
+    res.json({ success: true, message: '2FA enabled successfully' });
 
   } catch (err) {
     next(err);
@@ -490,33 +667,21 @@ exports.disable2FA = async (req, res, next) => {
       throw AppError.badRequest('2FA is not enabled');
     }
 
-    // Verify current code before disabling
-    const secret = decrypt(user.twoFactorSecret);
-    const isValid = authenticator.verify({ token: data.totpCode, secret });
-
+    // Verify current code before disabling (with replay prevention)
+    const isValid = await validateTOTP(user._id, data.totpCode, user.twoFactorSecret);
     if (!isValid) {
-      throw AppError.unauthorized('Invalid 2FA code', ErrorCodes.AUTH_2FA_INVALID);
+      throw AppError.unauthorized('Invalid or already used 2FA code', ErrorCodes.AUTH_2FA_INVALID);
     }
 
     user.twoFactorEnabled = false;
     user.twoFactorSecret = null;
     await user.save();
 
-    await audit.log({
-      actor: req.user.userId,
-      action: constants.AUDIT_ACTIONS.AUTH_2FA_DISABLED,
-      ip: req.ip,
-      userAgent: req.get('user-agent'),
-      resource: 'user',
-      resourceId: req.user.userId,
-    });
+    await auditLog(req, constants.AUDIT_ACTIONS.AUTH_2FA_DISABLED);
 
     logger.info('2FA disabled', { userId: req.user.userId });
 
-    res.json({
-      success: true,
-      message: '2FA disabled successfully',
-    });
+    res.json({ success: true, message: '2FA disabled successfully' });
 
   } catch (err) {
     next(err);

@@ -9,7 +9,7 @@ const merchantSchema = new mongoose.Schema({
 
   // API credentials
   apiKeys: [{
-    keyId: { type: String, required: true, unique: true, index: true },  // Public identifier
+    keyId: { type: String, required: true },  // Public identifier (indexed via schema.index)
     keyHash: { type: String, required: true },  // Hashed API key (bcrypt)
     apiSecret: { type: String, required: true }, // Encrypted API secret (AES-256-GCM)
     label: { type: String, default: 'default' },
