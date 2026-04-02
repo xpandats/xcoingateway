@@ -1,0 +1,7 @@
+{
+  "name": "@xcg/database",
+  "version": "0.1.0",
+  "private": true,
+  "main": "index.js",
+  "description": "MongoDB connection + all Mongoose models"
+}

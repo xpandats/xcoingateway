@@ -1,9 +1,39 @@
+# Dependencies
 node_modules/
+
+# Environment files (NEVER commit secrets)
 .env
 .env.local
+.env.staging
 .env.production
+.env.*.local
+
+# Logs
+logs/
 *.log
-.DS_Store
-Thumbs.db
+npm-debug.log*
+
+# Build output
 dist/
 build/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Docker
+docker-compose.override.yml
+
+# Coverage
+coverage/
+
+# Temp
+tmp/
+temp/

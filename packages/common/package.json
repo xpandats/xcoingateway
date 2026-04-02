@@ -1,0 +1,7 @@
+{
+  "name": "@xcg/common",
+  "version": "0.1.0",
+  "private": true,
+  "main": "index.js",
+  "description": "Shared utilities — errors, constants, validation, RBAC"
+}

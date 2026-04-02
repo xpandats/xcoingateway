@@ -1,0 +1,7 @@
+{
+  "name": "@xcg/crypto",
+  "version": "0.1.0",
+  "private": true,
+  "main": "index.js",
+  "description": "AES-256-GCM encryption, HMAC signing, key management — bank-grade"
+}

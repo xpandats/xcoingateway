@@ -1,0 +1,60 @@
+'use strict';
+
+const mongoose = require('mongoose');
+const { INVOICE_STATUS } = require('@xcg/common').constants;
+
+const invoiceSchema = new mongoose.Schema({
+  // Identifiers
+  invoiceId: { type: String, required: true, unique: true, index: true }, // Public-facing ID (inv_xxx)
+  merchantId: { type: mongoose.Schema.Types.ObjectId, ref: 'Merchant', required: true, index: true },
+  idempotencyKey: { type: String, sparse: true, index: true }, // Prevents duplicate creation
+
+  // Amount
+  baseAmount: { type: Number, required: true }, // Original amount requested (e.g., 150.00)
+  uniqueAmount: { type: Number, required: true, index: true }, // With offset (e.g., 150.000347)
+  amountOffset: { type: Number, required: true }, // The unique offset applied
+  currency: { type: String, default: 'USDT' },
+  network: { type: String, default: 'tron' },
+
+  // Payment details
+  walletAddress: { type: String, required: true, index: true }, // Receiving wallet
+  description: { type: String, default: '' },
+  metadata: { type: mongoose.Schema.Types.Mixed, default: {} }, // Merchant custom data
+
+  // Status
+  status: {
+    type: String,
+    enum: Object.values(INVOICE_STATUS),
+    default: INVOICE_STATUS.INITIATED,
+    index: true,
+  },
+
+  // Timing
+  expiresAt: { type: Date, required: true, index: true },
+  paidAt: { type: Date, default: null },
+  confirmedAt: { type: Date, default: null },
+
+  // Linked transaction (after match)
+  transactionId: { type: mongoose.Schema.Types.ObjectId, ref: 'Transaction', default: null },
+  txHash: { type: String, default: null },
+
+  // Webhook
+  callbackUrl: { type: String, default: '' },
+  webhookSent: { type: Boolean, default: false },
+
+  // Fee calculation
+  feePercentage: { type: Number, default: 0 },
+  fixedFee: { type: Number, default: 0 },
+  feeAmount: { type: Number, default: 0 },
+  netAmount: { type: Number, default: 0 }, // Amount merchant receives after fees
+}, {
+  timestamps: true,
+  collection: 'invoices',
+});
+
+// Compound indexes for matching engine
+invoiceSchema.index({ uniqueAmount: 1, walletAddress: 1, status: 1 });
+invoiceSchema.index({ status: 1, expiresAt: 1 }); // For expiry scanning
+invoiceSchema.index({ merchantId: 1, createdAt: -1 }); // For merchant dashboard
+
+module.exports = mongoose.model('Invoice', invoiceSchema);

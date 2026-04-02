@@ -1,0 +1,16 @@
+{
+  "name": "@xcg/api-server",
+  "version": "0.1.0",
+  "private": true,
+  "main": "src/app.js",
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "@xcg/common": "*",
+    "@xcg/crypto": "*",
+    "@xcg/logger": "*",
+    "@xcg/database": "*"
+  }
+}
