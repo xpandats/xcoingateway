@@ -38,6 +38,7 @@ function validateMasterKey() {
     throw new Error('FATAL: MASTER_ENCRYPTION_KEY does not produce a 32-byte key.');
   }
   keyBuffer.fill(0);
+  // Validation passed — key stays in process.env until deriveWalletKey() is called
 }
 
 /**

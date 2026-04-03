@@ -75,8 +75,15 @@ async function connectDB(uri = null, options = {}) {
     serverSelectionTimeoutMS: 5000,
     heartbeatFrequencyMS: 10000,
     retryWrites: true,
+    // F3: Kill queries taking longer than 10 seconds to prevent DoS via slow queries
+    socketTimeoutMS: 45000,
+    connectTimeoutMS: 10000,
     ...options,
   };
+
+  // F3: Global query timeout via Mongoose plugin
+  const mongoose_module = require('mongoose');
+  mongoose_module.set('maxTimeMS', 10000); // 10s max per query
 
   const maxRetries = 5;
   let retries = 0;

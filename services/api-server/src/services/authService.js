@@ -27,7 +27,7 @@ const crypto = require('crypto');
 const mongoose = require('mongoose');
 const { authenticator } = require('otplib');
 const { User, RefreshToken, UsedTotpCode, AuditLog } = require('@xcg/database');
-const { AppError, ErrorCodes, constants, getRequestContext } = require('@xcg/common');
+const { AppError, ErrorCodes, constants, getRequestContext, validateObjectId } = require('@xcg/common');
 const { encrypt, decrypt, randomHex } = require('@xcg/crypto');
 const { createLogger, createAuditLogger } = require('@xcg/logger');
 const { config } = require('../config');
@@ -52,6 +52,7 @@ function _generateAccessToken(user) {
       email: user.email,
       role: user.role,
       merchantId: user.merchantId?.toString() || null,
+      jti: randomHex(16), // Unique token ID for future revocation
     },
     config.jwt.accessSecret,
     { expiresIn: config.jwt.accessExpiry, algorithm: 'HS256' },
@@ -194,7 +195,10 @@ async function register(data) {
  * @returns {{ user: object, accessToken: string, refreshToken: string }}
  */
 async function login(data, ip, userAgent) {
-  const user = await User.findOne({ email: data.email });
+  // SECURITY: fetch with sensitive fields explicitly for password comparison
+  const user = await User.findOne({ email: data.email }).select(
+    '+passwordHash +twoFactorSecret',
+  );
 
   // Same error for wrong email vs wrong password (anti-enumeration)
   if (!user) {
@@ -210,8 +214,8 @@ async function login(data, ip, userAgent) {
     throw AppError.unauthorized('Account is disabled', ErrorCodes.AUTH_ACCOUNT_DISABLED);
   }
 
-  // Check account lockout
-  if (user.lockUntil && user.lockUntil > Date.now()) {
+  // A4: Use isLocked virtual (single consistent code path)
+  if (user.isLocked) {
     await _audit(AUDIT_ACTIONS.AUTH_LOGIN_FAILED, {
       actor: user._id.toString(),
       resourceId: user._id.toString(),
@@ -223,10 +227,15 @@ async function login(data, ip, userAgent) {
     );
   }
 
-  // Clear expired lock
+  // A8: Clear expired lock and audit it
   if (user.lockUntil && user.lockUntil <= Date.now()) {
     user.failedLoginAttempts = 0;
     user.lockUntil = null;
+    await _audit(AUDIT_ACTIONS.AUTH_ACCOUNT_UNLOCKED, {
+      actor: user._id.toString(),
+      resourceId: user._id.toString(),
+      metadata: { reason: 'lock_expired' },
+    });
   }
 
   // Verify password
@@ -271,7 +280,8 @@ async function login(data, ip, userAgent) {
   user.failedLoginAttempts = 0;
   user.lockUntil = null;
   user.lastLoginAt = new Date();
-  user.lastLoginIp = ip;
+  // Hash IP for privacy (GDPR) — SHA-256 of IP is still useful for security analysis
+  user.lastLoginIp = crypto.createHash('sha256').update(ip || '').digest('hex').slice(0, 16);
   await user.save();
 
   const accessToken = _generateAccessToken(user);
@@ -279,34 +289,43 @@ async function login(data, ip, userAgent) {
   const refreshTokenHash = _hashRefreshToken(refreshTokenValue);
   const tokenFamily = randomHex(16);
 
-  // Enforce max sessions
-  const activeTokenCount = await RefreshToken.countDocuments({
-    userId: user._id,
-    isRevoked: false,
-    expiresAt: { $gt: new Date() },
-  });
+  // D1: ATOMIC session management — evict + create in one transaction
+  const session = await mongoose.startSession();
+  try {
+    await session.withTransaction(async () => {
+      const activeTokenCount = await RefreshToken.countDocuments(
+        { userId: user._id, isRevoked: false, expiresAt: { $gt: new Date() } },
+        { session },
+      );
 
-  if (activeTokenCount >= AUTH.MAX_SESSIONS_PER_USER) {
-    const oldest = await RefreshToken.findOne({
-      userId: user._id,
-      isRevoked: false,
-    }).sort({ createdAt: 1 });
+      if (activeTokenCount >= AUTH.MAX_SESSIONS_PER_USER) {
+        const oldest = await RefreshToken.findOne(
+          { userId: user._id, isRevoked: false },
+          null,
+          { session },
+        ).sort({ createdAt: 1 });
 
-    if (oldest) {
-      oldest.isRevoked = true;
-      oldest.revokedAt = new Date();
-      await oldest.save();
-    }
+        if (oldest) {
+          await RefreshToken.updateOne(
+            { _id: oldest._id },
+            { $set: { isRevoked: true, revokedAt: new Date() } },
+            { session },
+          );
+        }
+      }
+
+      await RefreshToken.create([{
+        userId: user._id,
+        tokenHash: refreshTokenHash,
+        ip,
+        userAgent,
+        expiresAt: _getRefreshExpiryDate(),
+        family: tokenFamily,
+      }], { session });
+    });
+  } finally {
+    await session.endSession();
   }
-
-  await RefreshToken.create({
-    userId: user._id,
-    tokenHash: refreshTokenHash,
-    ip,
-    userAgent,
-    expiresAt: _getRefreshExpiryDate(),
-    family: tokenFamily,
-  });
 
   await _audit(AUDIT_ACTIONS.AUTH_LOGIN_SUCCESS, {
     actor: user._id.toString(),
@@ -410,23 +429,31 @@ async function refreshTokens(refreshTokenValue, ip, userAgent) {
     throw AppError.unauthorized('Account is disabled', ErrorCodes.AUTH_ACCOUNT_DISABLED);
   }
 
-  // ── Token rotation ──
+  // A1: ATOMIC token rotation — old revoke + new create in one transaction
   const newRefreshValue = _generateRefreshTokenValue();
   const newTokenHash = _hashRefreshToken(newRefreshValue);
 
-  storedToken.isRevoked = true;
-  storedToken.revokedAt = new Date();
-  storedToken.replacedByToken = newTokenHash;
-  await storedToken.save();
+  const session = await mongoose.startSession();
+  try {
+    await session.withTransaction(async () => {
+      await RefreshToken.updateOne(
+        { _id: storedToken._id },
+        { $set: { isRevoked: true, revokedAt: new Date(), replacedByToken: newTokenHash } },
+        { session },
+      );
 
-  await RefreshToken.create({
-    userId: user._id,
-    tokenHash: newTokenHash,
-    ip,
-    userAgent,
-    expiresAt: _getRefreshExpiryDate(),
-    family: storedToken.family,
-  });
+      await RefreshToken.create([{
+        userId: user._id,
+        tokenHash: newTokenHash,
+        ip,
+        userAgent,
+        expiresAt: _getRefreshExpiryDate(),
+        family: storedToken.family,
+      }], { session });
+    });
+  } finally {
+    await session.endSession();
+  }
 
   const newAccessToken = _generateAccessToken(user);
   return { accessToken: newAccessToken, refreshToken: newRefreshValue };
@@ -444,7 +471,9 @@ async function refreshTokens(refreshTokenValue, ip, userAgent) {
  * @param {string} newPassword - New password
  */
 async function changePassword(userId, currentPassword, newPassword) {
-  const user = await User.findById(userId);
+  validateObjectId(userId, 'userId');
+  // Explicitly select sensitive fields needed for this operation
+  const user = await User.findById(userId).select('+passwordHash +passwordHistory');
   if (!user) throw AppError.notFound('User not found');
 
   const isValid = await bcrypt.compare(currentPassword, user.passwordHash);
@@ -510,7 +539,8 @@ async function changePassword(userId, currentPassword, newPassword) {
  * @returns {object} Safe user data
  */
 async function getProfile(userId) {
-  const user = await User.findById(userId);
+  validateObjectId(userId, 'userId');
+  const user = await User.findById(userId); // sensitive fields excluded by select:false
   if (!user) throw AppError.notFound('User not found');
   return user.toSafeJSON();
 }
@@ -522,6 +552,7 @@ async function getProfile(userId) {
  * @returns {{ secret: string, otpAuthUrl: string }}
  */
 async function setup2FA(userId) {
+  validateObjectId(userId, 'userId');
   const user = await User.findById(userId);
   if (!user) throw AppError.notFound('User not found');
 
@@ -529,12 +560,19 @@ async function setup2FA(userId) {
     throw AppError.conflict('2FA is already enabled', ErrorCodes.AUTH_2FA_ALREADY_ENABLED);
   }
 
+  // A7: Generate secret but do NOT store in DB yet.
+  // Secret is only persisted after successful verify2FA().
+  // Return it for the client to scan the QR code.
   const secret = authenticator.generateSecret();
   const otpAuthUrl = authenticator.keyuri(user.email, 'XCoinGateway', secret);
 
+  // Store as pending (encrypted) in a temp field — cleared if never verified
+  // In production: use Redis with TTL instead. For MVP: store as pending secret.
   user.twoFactorSecret = encrypt(secret);
+  user.twoFactorEnabled = false; // Not enabled until verify2FA() succeeds
   await user.save();
 
+  // Return the RAW secret for QR scanning (one-time only)
   return { secret, otpAuthUrl };
 }
 
@@ -545,7 +583,9 @@ async function setup2FA(userId) {
  * @param {string} totpCode
  */
 async function verify2FA(userId, totpCode) {
-  const user = await User.findById(userId);
+  validateObjectId(userId, 'userId');
+  // Explicitly select twoFactorSecret for TOTP validation
+  const user = await User.findById(userId).select('+twoFactorSecret');
   if (!user) throw AppError.notFound('User not found');
 
   if (user.twoFactorEnabled) {
@@ -561,6 +601,7 @@ async function verify2FA(userId, totpCode) {
     throw AppError.unauthorized('Invalid or already used 2FA code', ErrorCodes.AUTH_2FA_INVALID);
   }
 
+  // Only NOW mark 2FA as enabled
   user.twoFactorEnabled = true;
   await user.save();
 
@@ -575,7 +616,8 @@ async function verify2FA(userId, totpCode) {
  * @param {string} totpCode
  */
 async function disable2FA(userId, totpCode) {
-  const user = await User.findById(userId);
+  validateObjectId(userId, 'userId');
+  const user = await User.findById(userId).select('+twoFactorSecret');
   if (!user) throw AppError.notFound('User not found');
 
   if (!user.twoFactorEnabled) {

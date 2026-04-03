@@ -19,6 +19,7 @@ const {
   requestContextMiddleware,
   updateRequestContext,
 } = require('./src/requestContext');
+const { validateObjectId, toObjectId, buildSort, isValidObjectId } = require('./src/utils');
 
 module.exports = {
   AppError,
@@ -33,4 +34,9 @@ module.exports = {
   runWithContext,
   requestContextMiddleware,
   updateRequestContext,
+  // Utility functions
+  validateObjectId,
+  toObjectId,
+  buildSort,
+  isValidObjectId,
 };

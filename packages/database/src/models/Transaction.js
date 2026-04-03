@@ -55,6 +55,7 @@ const transactionSchema = new mongoose.Schema({
 }, {
   timestamps: true,
   collection: 'transactions',
+  strict: true, // L4: explicit — reject unknown fields at DB write level
 });
 
 // Indexes for matching engine performance

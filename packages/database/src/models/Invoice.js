@@ -57,6 +57,7 @@ const invoiceSchema = new mongoose.Schema({
 }, {
   timestamps: true,
   collection: 'invoices',
+  strict: true, // L4: explicit — reject unknown fields at DB write level
 });
 
 // Compound indexes for matching engine

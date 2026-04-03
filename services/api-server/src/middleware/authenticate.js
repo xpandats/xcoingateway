@@ -73,10 +73,12 @@ async function authenticate(req, res, next) {
     }
 
     // 5. Attach user to request
+    // G3: Use DB role (not decoded.role) — prevents privilege persistence
+    // after an admin changes the user's role mid-session.
     req.user = {
       userId: user._id.toString(),
       email: user.email,
-      role: user.role,
+      role: user.role,          // From DB — always fresh
       merchantId: user.merchantId?.toString() || null,
     };
 

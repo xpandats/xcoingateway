@@ -42,9 +42,13 @@ const logger = createLogger('api-hmac');
 function _buildCanonicalString(req, timestamp, nonce) {
   const method = req.method.toUpperCase();
   const urlPath = req.originalUrl || req.url;
+
+  // D4: Sort keys for deterministic body hash (JSON key order is insertion-order in JS)
+  // Merchants MUST sort their body keys too — document this in API docs.
+  const sortedBody = req.body ? JSON.stringify(req.body, Object.keys(req.body).sort()) : '';
   const bodyHash = crypto
     .createHash('sha256')
-    .update(JSON.stringify(req.body || {}))
+    .update(sortedBody)
     .digest('hex');
 
   return `${method}\n${urlPath}\n${timestamp}\n${nonce}\n${bodyHash}`;
@@ -125,9 +129,14 @@ async function merchantAuth(req, res, next) {
       return next(AppError.unauthorized('Invalid API key', ErrorCodes.MERCHANT_API_KEY_INVALID));
     }
 
-    const apiKey = merchant.apiKeys.find((k) => k.keyId === apiKeyId && k.isActive);
+    // D6: Check API key expiry
+    const apiKey = merchant.apiKeys.find(
+      (k) => k.keyId === apiKeyId
+           && k.isActive
+           && (k.expiresAt === null || k.expiresAt === undefined || k.expiresAt > new Date()),
+    );
     if (!apiKey) {
-      return next(AppError.unauthorized('API key is inactive or not found', ErrorCodes.MERCHANT_API_KEY_INVALID));
+      return next(AppError.unauthorized('API key is inactive, expired, or not found', ErrorCodes.MERCHANT_API_KEY_INVALID));
     }
 
     // Merchant IP whitelist check (if enabled)
@@ -177,10 +186,20 @@ async function merchantAuth(req, res, next) {
     }
 
     // 5. Store nonce (TTL auto-expires via MongoDB index)
-    await UsedNonce.create({
-      nonce,
-      merchantId: merchant._id,
-    });
+    // D3: If nonce storage fails, the request MUST be rejected to prevent replay.
+    try {
+      await UsedNonce.create({
+        nonce,
+        merchantId: merchant._id,
+      });
+    } catch (nonceErr) {
+      logger.error('SECURITY: Nonce storage failed — blocking request to prevent replay', {
+        error: nonceErr.message,
+        requestId: req.requestId,
+        merchantId: merchant._id,
+      });
+      return next(AppError.internal('Request could not be processed securely. Please retry.'));
+    }
 
     // 6. Update key last-used timestamp (non-blocking)
     Merchant.updateOne(

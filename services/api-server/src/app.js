@@ -206,9 +206,10 @@ app.use('/internal/health', healthRoutes);
 // ═══════════════════════════════════════════════════════════════
 // 13. 404 HANDLER
 // ═══════════════════════════════════════════════════════════════
+// C4: Do NOT echo method/path — reveals API surface to attackers
 app.use((req, res) => {
   res.status(HttpStatus.NOT_FOUND).json(
-    response.error('NOT_FOUND', `Route ${req.method} ${req.path} not found`),
+    response.error('NOT_FOUND', 'The requested resource was not found'),
   );
 });
 

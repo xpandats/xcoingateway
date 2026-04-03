@@ -50,10 +50,22 @@ const merchantSchema = new mongoose.Schema({
 }, {
   timestamps: true,
   collection: 'merchants',
+  strict: true, // L4: explicit — reject unknown fields at DB write level
 });
 
 merchantSchema.index({ businessName: 'text' });
 merchantSchema.index({ 'apiKeys.keyId': 1 });
+
+// B3: Enforce webhookSecret is encrypted before saving
+// Prevents accidental storage of plaintext webhook secrets
+merchantSchema.pre('save', function (next) {
+  if (this.webhookSecret && this.webhookSecret.length > 0) {
+    if (!this.webhookSecret.startsWith('v1:')) {
+      return next(new Error('SECURITY: webhookSecret must be AES-256-GCM encrypted (v1: format) before saving'));
+    }
+  }
+  next();
+});
 
 merchantSchema.methods.toSafeJSON = function () {
   const obj = this.toObject();

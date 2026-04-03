@@ -102,25 +102,49 @@ const config = {
 function validateConfig() {
   const errors = [];
 
+  // J3: Minimum entropy check — secrets must be >= 64 hex chars (256-bit)
+  const HEX_64 = /^[a-f0-9]{64}$/i;
+
   if (!config.jwt.accessSecret || config.jwt.accessSecret.includes('CHANGE_ME')) {
     errors.push('JWT_ACCESS_SECRET is not set or still has placeholder value');
+  } else if (!HEX_64.test(config.jwt.accessSecret)) {
+    errors.push('JWT_ACCESS_SECRET must be exactly 64 hex characters (256-bit minimum entropy)');
   }
+
   if (!config.jwt.refreshSecret || config.jwt.refreshSecret.includes('CHANGE_ME')) {
     errors.push('JWT_REFRESH_SECRET is not set or still has placeholder value');
+  } else if (!HEX_64.test(config.jwt.refreshSecret)) {
+    errors.push('JWT_REFRESH_SECRET must be exactly 64 hex characters (256-bit minimum entropy)');
   }
+
   if (!config.encryption.masterKey || config.encryption.masterKey.includes('CHANGE_ME')) {
     errors.push('MASTER_ENCRYPTION_KEY is not set or still has placeholder value');
+  } else if (!HEX_64.test(config.encryption.masterKey)) {
+    errors.push('MASTER_ENCRYPTION_KEY must be exactly 64 hex characters (256-bit minimum entropy)');
   }
+
   if (!config.hmac.secret || config.hmac.secret.includes('CHANGE_ME')) {
     errors.push('HMAC_SECRET is not set or still has placeholder value');
+  } else if (!HEX_64.test(config.hmac.secret)) {
+    errors.push('HMAC_SECRET must be exactly 64 hex characters (256-bit minimum entropy)');
   }
 
   if (config.env === 'production') {
     if (config.networkMode !== 'MAINNET') {
       errors.push('Production environment MUST use NETWORK_MODE=MAINNET');
     }
+
+    // L1: MongoDB URI must have credentials in production
     if (config.db.uri.includes('localhost')) {
       errors.push('Production MUST NOT use localhost MongoDB');
+    }
+    if (!config.db.uri.includes('@')) {
+      errors.push('Production MongoDB URI MUST include credentials (user:password@host)');
+    }
+
+    // L2: TLS must be enabled in production (checked via URI param or separate config)
+    if (!config.db.uri.includes('tls=true') && !config.db.uri.includes('ssl=true')) {
+      errors.push('Production MongoDB URI MUST enable TLS (add ?tls=true to URI)');
     }
   }
 

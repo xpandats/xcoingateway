@@ -45,6 +45,11 @@ async function startServer() {
       });
     });
 
+    // F2: Prevent Slowloris attacks — kill connections that take too long
+    server.timeout = 30000;          // 30s total request timeout
+    server.requestTimeout = 30000;   // 30s for request header parsing
+    server.keepAliveTimeout = 65000; // 65s (must be > LB idle timeout)
+
     // 5. Graceful shutdown
     const shutdown = async (signal) => {
       logger.info(`${signal} received. Starting graceful shutdown...`);

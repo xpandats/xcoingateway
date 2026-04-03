@@ -14,8 +14,8 @@ const { ErrorCodes } = require('./errors/codes');
 
 const fields = {
   email: Joi.string().email().trim().lowercase().max(255),
-  password: Joi.string().min(8).max(128)
-    .regex(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?])/)
+  password: Joi.string().min(8).max(72)  // bcrypt silently truncates at 72 bytes — enforce at validation layer
+    .regex(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*()_+\-=[\]{};':\"\\|,.<>\/?])/)
     .message('Password must contain at least 1 uppercase, 1 lowercase, 1 digit, and 1 special character'),
   name: Joi.string().trim().min(1).max(100),
   businessName: Joi.string().trim().min(1).max(200),
@@ -26,7 +26,7 @@ const fields = {
   apiKey: Joi.string().length(64),
   totpCode: Joi.string().length(6).regex(/^\d+$/).message('TOTP must be 6 digits'),
   ip: Joi.string().ip(),
-  page: Joi.number().integer().min(1).default(1),
+  page: Joi.number().integer().min(1).max(1000).default(1), // max 1000 prevents full collection scan
   limit: Joi.number().integer().min(1).max(100).default(20),
   nonce: Joi.string().uuid(),
   timestamp: Joi.number().integer().positive(),
