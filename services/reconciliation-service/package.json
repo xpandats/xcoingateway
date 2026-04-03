@@ -1,0 +1,18 @@
+{
+  "name": "xcg-reconciliation-service",
+  "version": "1.0.0",
+  "description": "XCoinGateway Reconciliation Service — 15-minute ledger vs blockchain audit",
+  "main": "src/server.js",
+  "private": true,
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "dependencies": {
+    "@xcg/common": "*",
+    "@xcg/database": "*",
+    "@xcg/logger": "*",
+    "@xcg/queue": "*",
+    "@xcg/tron": "*"
+  }
+}

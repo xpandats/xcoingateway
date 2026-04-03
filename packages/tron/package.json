@@ -1,0 +1,11 @@
+{
+  "name": "@xcg/tron",
+  "version": "1.0.0",
+  "description": "Chain-agnostic blockchain adapter — Tron/USDT TRC20 implementation",
+  "main": "index.js",
+  "private": true,
+  "dependencies": {
+    "tronweb": "^6.0.0",
+    "axios": "^1.9.0"
+  }
+}

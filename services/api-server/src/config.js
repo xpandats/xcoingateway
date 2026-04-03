@@ -73,25 +73,51 @@ const config = {
   },
 
   wallet: {
-    hotWalletMaxBalance: parseFloat(process.env.HOT_WALLET_MAX_BALANCE) || 500,
+    // Phase 2: raised to 1000 USDT. Superadmin can override via SystemConfig in DB.
+    hotWalletMaxBalance: parseFloat(process.env.HOT_WALLET_MAX_BALANCE) || 1000,
     coldWalletAddress: process.env.COLD_WALLET_ADDRESS || '',
-    withdrawalCooldownMs: parseInt(process.env.WITHDRAWAL_COOLDOWN_MS, 10) || 60000,
-    highValueThreshold: parseFloat(process.env.HIGH_VALUE_THRESHOLD) || 1000,
+    // 1 hour cooling-off between deposit and withdrawal (financial security)
+    withdrawalCooldownMs: parseInt(process.env.WITHDRAWAL_COOLDOWN_MS, 10) || 3_600_000,
+    // Manual admin approval required for withdrawals above this (USDT)
+    highValueThreshold: parseFloat(process.env.HIGH_VALUE_THRESHOLD) || 5000,
+    // Per-merchant daily withdrawal cap (USDT)
+    dailyWithdrawalCap: parseFloat(process.env.DAILY_WITHDRAWAL_CAP) || 10000,
+    // Per-transaction withdrawal limit (USDT)
+    perTxWithdrawalLimit: parseFloat(process.env.PER_TX_WITHDRAWAL_LIMIT) || 1000,
   },
 
   invoice: {
-    expiryMs: parseInt(process.env.INVOICE_EXPIRY_MS, 10) || 1800000,
-    minOffset: parseFloat(process.env.UNIQUE_AMOUNT_MIN_OFFSET) || 0.000001,
-    maxOffset: parseFloat(process.env.UNIQUE_AMOUNT_MAX_OFFSET) || 0.009999,
+    // 15 minutes default expiry per user requirements
+    expiryMs: parseInt(process.env.INVOICE_EXPIRY_MS, 10) || 900_000,
+    // Unique amount offset range — 10,000 possible concurrent invoices per base amount
+    minOffset: 0.000001,   // HARDCODED — do not change without matching engine review
+    maxOffset: 0.009999,   // HARDCODED — do not change without matching engine review
+    // Platform fee as fraction (0.001 = 0.1%)
+    platformFeeRate: parseFloat(process.env.PLATFORM_FEE_RATE) || 0.001,
   },
 
   tron: {
-    apiUrl: process.env.TRONGRID_API_URL || 'https://api.shasta.trongrid.io',
+    // Testnet: Nile — MUST use testnet until explicitly switched to mainnet
+    network: process.env.TRON_NETWORK || 'testnet',
+    apiUrl: process.env.TRONGRID_API_URL || 'https://nile.trongrid.io',
     apiKey: process.env.TRONGRID_API_KEY || '',
-    rpcFallback: process.env.TRON_RPC_FALLBACK || '',
-    usdtContract: process.env.TRON_USDT_CONTRACT || 'TG3XXyExBkPp9nzdajDZsozEu4BkaSJozs',
+    rpcFallback: process.env.TRON_RPC_FALLBACK || 'https://nile.tronstack.io',
+    // SECURITY: USDT contract — resolved at runtime by TronAdapter based on network.
+    // NOT from env — hardcoded in adapter for security.
     confirmationsRequired: parseInt(process.env.TRON_CONFIRMATIONS_REQUIRED, 10) || 19,
-    pollIntervalMs: parseInt(process.env.TRON_POLL_INTERVAL_MS, 10) || 5000,
+    pollIntervalMs: parseInt(process.env.TRON_POLL_INTERVAL_MS, 10) || 4000,
+    staleBlockAlertMs: parseInt(process.env.TRON_STALE_BLOCK_ALERT_MS, 10) || 30_000,
+  },
+
+  queue: {
+    // QUEUE_SIGNING_SECRET: Used to HMAC-sign all inter-service queue messages.
+    // Must be distinct from other secrets.
+    signingSecret: process.env.QUEUE_SIGNING_SECRET,
+  },
+
+  telegram: {
+    botToken: process.env.TELEGRAM_BOT_TOKEN || '',
+    chatId: process.env.TELEGRAM_ALERT_CHAT_ID || '',
   },
 };
 
@@ -146,13 +172,21 @@ function validateConfig() {
     }
   }
 
-  // T-2/CRYPTO-2: All 4 secrets MUST be distinct from each other.
+  // Phase 2: Validate QUEUE_SIGNING_SECRET is present
+  if (!config.queue.signingSecret || config.queue.signingSecret.includes('CHANGE_ME')) {
+    errors.push('QUEUE_SIGNING_SECRET is not set — required for inter-service message signing');
+  } else if (!HEX_64.test(config.queue.signingSecret)) {
+    errors.push('QUEUE_SIGNING_SECRET must be exactly 64 hex characters (256-bit minimum entropy)');
+  }
+
+  // T-2/CRYPTO-2: All 5 secrets MUST be distinct from each other.
   // Reusing secrets across purposes destroys their cryptographic independence.
   const secrets = {
     JWT_ACCESS_SECRET: config.jwt.accessSecret,
     JWT_REFRESH_SECRET: config.jwt.refreshSecret,
     MASTER_ENCRYPTION_KEY: config.encryption.masterKey,
     HMAC_SECRET: config.hmac.secret,
+    QUEUE_SIGNING_SECRET: config.queue.signingSecret,
   };
   const secretEntries = Object.entries(secrets).filter(([, v]) => v);
   for (let i = 0; i < secretEntries.length; i++) {

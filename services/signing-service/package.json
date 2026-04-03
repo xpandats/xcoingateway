@@ -1,0 +1,19 @@
+{
+  "name": "xcg-signing-service",
+  "version": "1.0.0",
+  "description": "XCoinGateway Signing Service — Zone 3, queue-only, NO HTTP endpoint",
+  "main": "src/server.js",
+  "private": true,
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "dependencies": {
+    "@xcg/common": "*",
+    "@xcg/crypto": "*",
+    "@xcg/database": "*",
+    "@xcg/logger": "*",
+    "@xcg/queue": "*",
+    "@xcg/tron": "*"
+  }
+}

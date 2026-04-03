@@ -1,0 +1,11 @@
+{
+  "name": "@xcg/queue",
+  "version": "1.0.0",
+  "description": "Secure Redis queue wrapper — HMAC-signed BullMQ messages",
+  "main": "index.js",
+  "private": true,
+  "dependencies": {
+    "bullmq": "^5.72.1",
+    "ioredis": "^5.10.1"
+  }
+}

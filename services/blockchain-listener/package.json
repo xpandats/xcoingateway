@@ -1,0 +1,18 @@
+{
+  "name": "xcg-blockchain-listener",
+  "version": "1.0.0",
+  "description": "XCoinGateway Blockchain Listener — polls TronGrid for USDT TRC20 transfers",
+  "main": "src/server.js",
+  "private": true,
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "dependencies": {
+    "@xcg/common": "*",
+    "@xcg/database": "*",
+    "@xcg/logger": "*",
+    "@xcg/queue": "*",
+    "@xcg/tron": "*"
+  }
+}

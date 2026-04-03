@@ -1,49 +1,108 @@
+'use strict';
+
+/**
+ * PM2 Ecosystem Config — XCoinGateway Services
+ *
+ * SECURITY ZONES:
+ *   Zone 2 — Application: api-server, blockchain-listener, matching-engine,
+ *                          withdrawal-engine, notification-service, reconciliation-service
+ *   Zone 3 — Secure Vault: signing-service (separate user in production)
+ *
+ * PRODUCTION NOTES:
+ *   - signing-service MUST run as a separate OS user (e.g. xcg-signer)
+ *   - signing-service MUST have NO network access except Redis port
+ *   - All services should have resource limits set at OS level
+ */
+
+const BASE_ENV = {
+  NODE_ENV: 'production',
+  NETWORK_MODE: 'MAINNET',
+};
+
 module.exports = {
   apps: [
+    // ─── Zone 2 Services ─────────────────────────────────────────────────────
+
     {
       name: 'xcg-api-server',
-      script: 'services/api-server/src/server.js',
-      instances: 'max',       // Cluster mode: one process per CPU core
+      script: './services/api-server/src/server.js',
+      instances: 2,              // Horizontal scaling
       exec_mode: 'cluster',
-
-      // INFRA-3: Memory limits — prevent single bad request from OOMing all workers
       max_memory_restart: '512M',
+      env: { ...BASE_ENV },
+      env_development: { NODE_ENV: 'development', PORT: 3001 },
+      error_file: './logs/api-server-error.log',
+      out_file:   './logs/api-server-out.log',
+    },
 
-      // Restart policy
-      autorestart: true,
-      restart_delay: 3000,    // 3s delay between restarts (prevents restart loop DoS)
-      max_restarts: 10,       // After 10 restarts, mark as errored (alert required)
-      min_uptime: '10s',      // Must stay up 10s to count as successful restart
+    {
+      name: 'xcg-blockchain-listener',
+      script: './services/blockchain-listener/src/server.js',
+      instances: 1,              // MUST be 1 — single listener prevents duplicate detection
+      max_memory_restart: '256M',
+      env: { ...BASE_ENV },
+      env_development: { NODE_ENV: 'development' },
+      error_file: './logs/blockchain-listener-error.log',
+      out_file:   './logs/blockchain-listener-out.log',
+    },
 
-      // Logging
-      error_file: 'logs/api-server-error.log',
-      out_file: 'logs/api-server-out.log',
-      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
-      merge_logs: true,
+    {
+      name: 'xcg-matching-engine',
+      script: './services/matching-engine/src/server.js',
+      instances: 1,              // Single instance — atomic DB transactions prevent duplicate match
+      max_memory_restart: '256M',
+      env: { ...BASE_ENV },
+      env_development: { NODE_ENV: 'development' },
+      error_file: './logs/matching-engine-error.log',
+      out_file:   './logs/matching-engine-out.log',
+    },
 
-      // Environment variables are NOT stored here — use .env files or Vault
-      // NEVER add secrets to this file
-      env: {
-        NODE_ENV: 'production',
-        PORT: 3001,
-      },
-      env_development: {
-        NODE_ENV: 'development',
-        PORT: 3001,
-      },
+    {
+      name: 'xcg-withdrawal-engine',
+      script: './services/withdrawal-engine/src/server.js',
+      instances: 1,
+      max_memory_restart: '256M',
+      env: { ...BASE_ENV },
+      env_development: { NODE_ENV: 'development' },
+      error_file: './logs/withdrawal-engine-error.log',
+      out_file:   './logs/withdrawal-engine-out.log',
+    },
 
-      // Watch: disabled in production (use CI/CD for deployments)
-      watch: false,
+    {
+      name: 'xcg-notification-service',
+      script: './services/notification-service/src/server.js',
+      instances: 1,
+      max_memory_restart: '256M',
+      env: { ...BASE_ENV },
+      env_development: { NODE_ENV: 'development' },
+      error_file: './logs/notification-service-error.log',
+      out_file:   './logs/notification-service-out.log',
+    },
 
-      // Kill timeout: grace period before SIGKILL
-      kill_timeout: 5000,
+    {
+      name: 'xcg-reconciliation-service',
+      script: './services/reconciliation-service/src/server.js',
+      instances: 1,
+      max_memory_restart: '256M',
+      env: { ...BASE_ENV },
+      env_development: { NODE_ENV: 'development' },
+      error_file: './logs/reconciliation-service-error.log',
+      out_file:   './logs/reconciliation-service-out.log',
+    },
 
-      // Graceful reload: send SIGINT instead of SIGTERM (respects our shutdown handlers)
-      listen_timeout: 10000,
-      shutdown_with_message: false,
-
-      // Source maps: disabled in production (don't expose internals)
-      source_map_support: false,
+    // ─── Zone 3 — Secure Vault ───────────────────────────────────────────────
+    // PRODUCTION: This process MUST run as a separate OS user with minimal permissions
+    // The signing-service has NO HTTP endpoints — it only connects to Redis
+    {
+      name: 'xcg-signing-service',
+      script: './services/signing-service/src/server.js',
+      instances: 1,              // MUST be 1 — no parallel key operations
+      max_memory_restart: '128M',
+      env: { ...BASE_ENV },
+      env_development: { NODE_ENV: 'development' },
+      error_file: './logs/signing-service-error.log',
+      out_file:   './logs/signing-service-out.log',
+      // In production: pm2 start --uid xcg-signer --gid xcg-signer xcg-signing-service
     },
   ],
 };

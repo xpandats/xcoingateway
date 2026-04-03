@@ -1,0 +1,17 @@
+{
+  "name": "xcg-notification-service",
+  "version": "1.0.0",
+  "description": "XCoinGateway Notification Service — HMAC-signed webhooks + Telegram alerts",
+  "main": "src/server.js",
+  "private": true,
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "dependencies": {
+    "@xcg/common": "*",
+    "@xcg/database": "*",
+    "@xcg/logger": "*",
+    "@xcg/queue": "*"
+  }
+}
