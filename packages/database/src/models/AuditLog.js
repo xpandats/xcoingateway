@@ -3,6 +3,8 @@
 const mongoose = require('mongoose');
 
 /**
+ * @module models/AuditLog
+ *
  * Audit Log — APPEND-ONLY, IMMUTABLE.
  *
  * SECURITY: Update and delete operations are disabled at the schema level.

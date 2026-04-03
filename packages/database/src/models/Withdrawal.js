@@ -1,5 +1,12 @@
 'use strict';
 
+/**
+ * @module models/Withdrawal
+ *
+ * Withdrawal — Merchant USDT payout requests.
+ * High-value withdrawals require admin approval before signing.
+ */
+
 const mongoose = require('mongoose');
 const { WITHDRAWAL_STATUS } = require('@xcg/common').constants;
 
@@ -37,8 +44,8 @@ const withdrawalSchema = new mongoose.Schema({
 
   // Processing
   attempts: { type: Number, default: 0 },
-  lastError: { type: String, default: null },
-  idempotencyKey: { type: String, sparse: true, index: true },
+  lastError: { type: String, default: null },   // Internal only — never exposed via API
+  idempotencyKey: { type: String, sparse: true, unique: true }, // Prevent duplicate withdrawals
 
   requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
 }, {
@@ -47,5 +54,13 @@ const withdrawalSchema = new mongoose.Schema({
 });
 
 withdrawalSchema.index({ merchantId: 1, status: 1, createdAt: -1 });
+
+// External-safe: hides internal retry error details
+withdrawalSchema.methods.toSafeJSON = function () {
+  const obj = this.toObject();
+  delete obj.lastError;
+  delete obj.__v;
+  return obj;
+};
 
 module.exports = mongoose.model('Withdrawal', withdrawalSchema);

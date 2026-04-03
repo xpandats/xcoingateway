@@ -1,5 +1,12 @@
 'use strict';
 
+/**
+ * @module models/Invoice
+ *
+ * Invoice — Payment request from a merchant.
+ * Contains the unique decimal amount used for blockchain matching.
+ */
+
 const mongoose = require('mongoose');
 const { INVOICE_STATUS } = require('@xcg/common').constants;
 
@@ -56,5 +63,13 @@ const invoiceSchema = new mongoose.Schema({
 invoiceSchema.index({ uniqueAmount: 1, walletAddress: 1, status: 1 });
 invoiceSchema.index({ status: 1, expiresAt: 1 }); // For expiry scanning
 invoiceSchema.index({ merchantId: 1, createdAt: -1 }); // For merchant dashboard
+
+// Safe for external API — excludes internal fee breakdown
+invoiceSchema.methods.toSafeJSON = function () {
+  const obj = this.toObject();
+  delete obj.__v;
+  delete obj.amountOffset; // Internal implementation detail
+  return obj;
+};
 
 module.exports = mongoose.model('Invoice', invoiceSchema);

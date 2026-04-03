@@ -1,5 +1,12 @@
 'use strict';
 
+/**
+ * @module models/Transaction
+ *
+ * Blockchain Transaction — detected incoming transfers.
+ * Immutable after matching (status updates only via service layer).
+ */
+
 const mongoose = require('mongoose');
 const { TX_STATUS } = require('@xcg/common').constants;
 
@@ -55,5 +62,13 @@ transactionSchema.index({ toAddress: 1, amount: 1, status: 1 });
 transactionSchema.index({ status: 1, detectedAt: -1 });
 transactionSchema.index({ network: 1, blockNumber: -1 });
 transactionSchema.index({ flaggedForReview: 1, status: 1 });
+
+// Never expose internal review notes or error details externally
+transactionSchema.methods.toSafeJSON = function () {
+  const obj = this.toObject();
+  delete obj.lastError;
+  delete obj.__v;
+  return obj;
+};
 
 module.exports = mongoose.model('Transaction', transactionSchema);
