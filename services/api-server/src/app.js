@@ -53,11 +53,12 @@ try {
 
 
 // ─── Route Imports ───────────────────────────────────────────────────────────
-const authRoutes       = require('./routes/auth');
-const healthRoutes     = require('./routes/health');
-const walletRoutes     = require('./routes/wallets');
-const merchantRoutes   = require('./routes/merchants');
-// Factory routes (need redisClient injected at mount time)
+const authRoutes         = require('./routes/auth');
+const healthRoutes       = require('./routes/health');
+const walletRoutes       = require('./routes/wallets');
+const merchantRoutes     = require('./routes/merchants');
+const adminRoutes        = require('./routes/admin');
+// Factory routes — redisClient injected once at app creation time (NOT per-request)
 const invoiceRouteFactory    = require('./routes/invoices');
 const withdrawalRouteFactory = require('./routes/withdrawals');
 
@@ -298,11 +299,12 @@ app.use('/internal/health',         healthLimiter, healthRoutes);
 // ─── Admin routes (authenticate + authorize('admin') + IP whitelist inside) ───
 app.use('/admin/wallets',           walletRoutes);
 app.use('/admin/merchants',         merchantRoutes);
+app.use('/admin',                   adminRoutes);   // dashboard, transactions, withdrawals, audit
 
-// ─── Merchant API (HMAC-signed) ── redisClient injected for nonce checks ──────
-// app.locals.redis is set by createApp(redisClient) factory below
-app.use('/api/v1/payments',         (req, res, next) => invoiceRouteFactory(req.app.locals.redis)(req, res, next));
-app.use('/api/v1/withdrawals',      (req, res, next) => withdrawalRouteFactory(req.app.locals.redis)(req, res, next));
+// ─── Merchant API (HMAC-signed) ── routers built once in createApp() ───────────────
+// Delegate to cached pre-built routers (avoids per-request router creation)
+app.use('/api/v1/payments',    (req, res, next) => (req.app.locals._invoiceRouter    || invoiceRouteFactory(null))(req, res, next));
+app.use('/api/v1/withdrawals', (req, res, next) => (req.app.locals._withdrawalRouter || withdrawalRouteFactory(null))(req, res, next));
 
 // ═══════════════════════════════════════════════════════════════
 // 13. 404 HANDLER
@@ -367,7 +369,8 @@ app.use((err, req, res, _next) => {
 
 /**
  * Factory function — creates the Express app with a Redis client injected.
- * Needed so merchant API auth middleware can use Redis for nonce deduplication.
+ * Invoice and withdrawal routes need Redis for nonce deduplication.
+ * Routers are built ONCE here, not on every request.
  *
  * @param {object} [redisClient] - IORedis instance
  * @returns {express.Application}
@@ -375,6 +378,15 @@ app.use((err, req, res, _next) => {
 function createApp(redisClient) {
   if (redisClient) {
     app.locals.redis = redisClient;
+    // Build routers ONCE at startup with the real Redis client
+    // This prevents the per-request router creation memory leak
+    const invoiceRouter    = invoiceRouteFactory(redisClient);
+    const withdrawalRouter = withdrawalRouteFactory(redisClient);
+
+    // Remove previous per-request middleware and replace with static routers
+    // Using a fresh router cache stored in app.locals
+    app.locals._invoiceRouter    = invoiceRouter;
+    app.locals._withdrawalRouter = withdrawalRouter;
   }
   return app;
 }

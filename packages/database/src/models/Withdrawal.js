@@ -41,6 +41,7 @@ const withdrawalSchema = new mongoose.Schema({
   rejectedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
   rejectedAt: { type: Date, default: null },
   rejectionReason: { type: String, default: null },
+  reviewNotes: { type: String, default: '' },  // Admin notes on approve/reject
 
   // Processing
   attempts: { type: Number, default: 0 },

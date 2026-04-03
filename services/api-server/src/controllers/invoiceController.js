@@ -1,116 +1,118 @@
 'use strict';
 
 /**
- * @module controllers/invoiceController
+ * @module controllers/invoiceController — FIXED
  *
- * Invoice Controller — Merchant-facing payment creation.
- *
- * MERCHANT API (HMAC-signed requests):
- *   POST /api/v1/payments      — Create payment invoice
- *   GET  /api/v1/payments/:id  — Get payment status
- *   GET  /api/v1/payments      — List payments (paginated)
- *
- * SECURITY:
- *   - All routes validated by merchantApiAuth middleware (HMAC-SHA256 signature)
- *   - Nonce + timestamp === replay attack prevention
- *   - Merchant can only see their own invoices (merchantId enforced from JWT)
- *   - idempotencyKey prevents duplicate invoice creation
+ * Merchant-facing payment invoice endpoints.
+ * All routes use HMAC-signed merchant API auth.
  */
 
-const { schemas, validate } = require('@xcg/common');
-const { config }             = require('../config');
-const InvoiceService         = require('../services/invoiceService');
-const WalletService          = require('../services/walletService');
-const { Merchant }           = require('@xcg/database');
-const logger                 = require('@xcg/logger').createLogger('invoice-ctrl');
+const Joi        = require('joi');
+const { validate, AppError } = require('@xcg/common');
+const { INVOICE_STATUS } = require('@xcg/common').constants;
+const asyncHandler   = require('../utils/asyncHandler');
+const InvoiceService = require('../services/invoiceService');
+const WalletService  = require('../services/walletService');
+const { config }     = require('../config');
 
-// Shared lazy-init service singleton
-let _invoiceService = null;
+const logger = require('@xcg/logger').createLogger('invoice-ctrl');
 
-function getInvoiceService() {
-  if (!_invoiceService) {
-    const walletService = new WalletService({
-      masterKey: config.encryption.masterKey,
-      logger,
-    });
-    _invoiceService = new InvoiceService({
-      config:        config.invoice,
-      walletService,
-      logger,
-    });
-  }
+// Lazy-init singletons
+let _walletService, _invoiceService;
+
+function getServices() {
+  if (!_walletService) _walletService = new WalletService({ logger });
+  if (!_invoiceService) _invoiceService = new InvoiceService({ walletService: _walletService, logger });
   return _invoiceService;
 }
 
-// ─── POST /api/v1/payments ───────────────────────────────────────────────────
+// ─── Validation ──────────────────────────────────────────────────────────────
+
+const createSchema = Joi.object({
+  amount:         Joi.number().min(0.01).max(1000000).precision(6).required(),
+  currency:       Joi.string().valid('USDT').default('USDT'),
+  description:    Joi.string().trim().max(500).optional().allow(''),
+  metadata:       Joi.object().max(10).optional(),
+  callbackUrl:    Joi.string().uri({ scheme: ['https'] }).max(500).optional(),
+  idempotencyKey: Joi.string().uuid().optional(),
+}).options({ stripUnknown: true });
+
+const listSchema = Joi.object({
+  page:   Joi.number().integer().min(1).default(1),
+  limit:  Joi.number().integer().min(1).max(100).default(20),
+  status: Joi.string().valid(...Object.values(INVOICE_STATUS)).optional(),
+}).options({ stripUnknown: true });
+
+// ─── Handlers ────────────────────────────────────────────────────────────────
 
 async function createInvoice(req, res) {
-  const data     = validate(schemas.invoice.create, req.body);
-  const merchant = req.merchant; // Set by merchantApiAuth middleware
+  const data = validate(createSchema, req.body);
 
-  const invoice = await getInvoiceService().createInvoice(data, merchant);
+  // SSRF: validate callbackUrl if provided
+  if (data.callbackUrl) {
+    const { validateOutboundUrl } = require('../middleware/ssrfProtection');
+    await validateOutboundUrl(data.callbackUrl);
+  }
+
+  const invoice = await getServices().createInvoice(data, req.merchant);
 
   res.status(201).json({
     success: true,
-    data: {
-      invoice: {
-        invoiceId:     invoice.invoiceId,
-        status:        invoice.status,
-        amount:        invoice.baseAmount,
-        uniqueAmount:  invoice.uniqueAmount,
-        currency:      invoice.currency,
-        network:       invoice.network,
-        walletAddress: invoice.walletAddress,
-        expiresAt:     invoice.expiresAt,
-        paymentUrl:    `${process.env.PAYMENT_PAGE_URL || ''}/pay/${invoice.invoiceId}`,
-      },
-    },
+    data:    { invoice },
   });
 }
 
-// ─── GET /api/v1/payments/:id ────────────────────────────────────────────────
-
 async function getInvoice(req, res) {
-  const { id } = req.params;
-  const merchant = req.merchant;
+  const invoice = await getServices().getInvoice(req.params.id, req.merchant._id);
+  res.json({ success: true, data: { invoice } });
+}
 
-  const invoice = await getInvoiceService().getInvoice(id, merchant._id);
+async function listInvoices(req, res) {
+  const query  = validate(listSchema, req.query);
+  const result = await getServices().listInvoices(req.merchant._id, query);
+  res.json({ success: true, data: result });
+}
+
+// ─── Payment Status Endpoint (merchant polling) ───────────────────────────────
+
+async function getPaymentStatus(req, res) {
+  const invoice = await getServices().getInvoice(req.params.id, req.merchant._id);
+
+  // Map to partner-friendly status
+  const statusMap = {
+    [INVOICE_STATUS.INITIATED]: 'created',
+    [INVOICE_STATUS.PENDING]:   'awaiting_payment',
+    [INVOICE_STATUS.HASH_FOUND]:'processing',
+    [INVOICE_STATUS.CONFIRMING]:'confirming',
+    [INVOICE_STATUS.CONFIRMED]: 'confirmed',
+    [INVOICE_STATUS.SUCCESS]:   'completed',
+    [INVOICE_STATUS.EXPIRED]:   'expired',
+    [INVOICE_STATUS.FAILED]:    'failed',
+    [INVOICE_STATUS.CANCELLED]: 'cancelled',
+  };
 
   res.json({
     success: true,
     data: {
-      invoice: {
-        invoiceId:     invoice.invoiceId,
-        status:        invoice.status,
-        amount:        invoice.baseAmount,
-        uniqueAmount:  invoice.uniqueAmount,
-        currency:      invoice.currency,
-        walletAddress: invoice.walletAddress,
-        expiresAt:     invoice.expiresAt,
-        confirmedAt:   invoice.confirmedAt,
-        txHash:        invoice.txHash,
-        netAmount:     invoice.netAmount,
-        feeAmount:     invoice.feeAmount,
-      },
+      invoiceId:     invoice.invoiceId,
+      status:        invoice.status,
+      displayStatus: statusMap[invoice.status] || invoice.status,
+      amount:        invoice.baseAmount,
+      uniqueAmount:  invoice.uniqueAmount,
+      currency:      invoice.currency,
+      network:       invoice.network,
+      walletAddress: invoice.walletAddress,
+      expiresAt:     invoice.expiresAt,
+      confirmedAt:   invoice.confirmedAt || null,
+      txHash:        invoice.txHash || null,
+      netAmount:     invoice.netAmount || null,
     },
   });
 }
 
-// ─── GET /api/v1/payments ────────────────────────────────────────────────────
-
-async function listInvoices(req, res) {
-  const query    = validate(schemas.pagination, req.query);
-  const merchant = req.merchant;
-
-  const result = await getInvoiceService().listInvoices(merchant._id, {
-    page:      query.page,
-    limit:     query.limit,
-    status:    req.query.status,
-    sortBy:    query.sortBy,
-    sortOrder: query.sortOrder,
-  });
-
-  res.json({ success: true, data: result });
-}
-
-module.exports = { createInvoice, getInvoice, listInvoices };
+module.exports = {
+  createInvoice:    asyncHandler(createInvoice),
+  getInvoice:       asyncHandler(getInvoice),
+  listInvoices:     asyncHandler(listInvoices),
+  getPaymentStatus: asyncHandler(getPaymentStatus),
+};

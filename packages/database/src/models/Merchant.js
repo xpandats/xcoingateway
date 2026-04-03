@@ -5,6 +5,7 @@ const mongoose = require('mongoose');
 const merchantSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, unique: true },
   businessName: { type: String, required: true, trim: true },
+  email: { type: String, default: '', trim: true, lowercase: true },  // Contact email
   isActive: { type: Boolean, default: true, index: true },
 
   // API credentials

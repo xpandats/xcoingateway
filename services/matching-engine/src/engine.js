@@ -1,39 +1,22 @@
 'use strict';
 
 /**
- * @module matching-engine/engine — CORRECTED
+ * @module matching-engine/engine
  *
  * Matching Engine — Heart of XCoinGateway.
- *
- * Corrected to match actual DB model field names:
- *   Invoice:     txHash (not matchedTxHash), walletAddress (not walletId)
- *   Transaction: blockNumber (not blockNum), matchedInvoiceId (not invoiceId)
- *   LedgerEntry: entryId required, counterpartEntryId required, amount is Number (not String)
- *
- * TRANSACTION STATE MACHINE:
- *   initiated → pending → hash_found → confirming → confirmed → success
- *            ↘ expired     ↘ failed
- *
- * MATCHING CRITERIA (ALL must pass):
- *   1. toAddress is our active wallet
- *   2. Token contract = official USDT TRC20 (hardcoded)
- *   3. tokenSymbol = 'USDT'
- *   4. Amount matches active invoice uniqueAmount (exact float match)
- *   5. Invoice not expired (expiresAt > now)
- *   6. Invoice not already matched (txHash = null)
- *   7. Confirmations >= 19 (ZERO TOLERANCE — never less)
- *   8. TX hash idempotent (unique index on Transaction.txHash)
+ * Uses INVOICE_STATUS constants throughout — not string literals.
  */
 
 const mongoose   = require('mongoose');
 const { v4: uuidv4 } = require('uuid');
 const { Invoice, Transaction, LedgerEntry } = require('@xcg/database');
 const { money }  = require('@xcg/common');
+const { INVOICE_STATUS } = require('@xcg/common').constants;
 
 // ─── HARDCODED CONSTANTS — NEVER from config/env ─────────────────────────────
 const USDT_CONTRACTS = new Set([
-  'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t', // Mainnet
-  'TXLAQ63Xg1NAzckPwKHvzw7CSEmLMEqcdj', // Nile testnet
+  'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t', // Mainnet USDT
+  'TXLAQ63Xg1NAzckPwKHvzw7CSEmLMEqcdj', // Nile testnet USDT
 ]);
 
 class MatchingEngine {
@@ -46,51 +29,49 @@ class MatchingEngine {
     this.logger              = logger;
   }
 
-  // ─── Main Handler ─────────────────────────────────────────────────────────
-
   async handle(txData, idempotencyKey) {
     const { txHash } = txData;
 
-    // ── Idempotency: already processed? ──────────────────────────────────────
+    // Idempotency guard
     const existingTx = await Transaction.findOne({ txHash }).select('status').lean();
     if (existingTx) {
-      this.logger.debug('MatchingEngine: already processed — skipping', { txHash, status: existingTx.status });
+      this.logger.debug('MatchingEngine: idempotency — already processed', { txHash });
       return;
     }
 
-    this.logger.info('MatchingEngine: processing', { txHash, amount: txData.amount, toAddress: txData.toAddress, confirmations: txData.confirmations });
+    this.logger.info('MatchingEngine: processing', {
+      txHash, amount: txData.amount, toAddress: txData.toAddress, confirmations: txData.confirmations,
+    });
 
-    // ── 1. Token contract whitelist (fake token attack prevention) ────────────
+    // 1. Contract whitelist
     if (!USDT_CONTRACTS.has(txData.tokenContract)) {
       this.logger.warn('MatchingEngine: rejected — unknown contract', { txHash, contract: txData.tokenContract });
       await this._recordFailed(txData, 'invalid_token_contract');
       return;
     }
 
-    // ── 2. Token symbol validation ────────────────────────────────────────────
+    // 2. Symbol check
     if (txData.tokenSymbol !== 'USDT') {
       this.logger.warn('MatchingEngine: rejected — not USDT', { txHash });
       await this._recordFailed(txData, 'invalid_token_symbol');
       return;
     }
 
-    // ── 3. Confirmation depth (CRITICAL — never credit 0-conf) ────────────────
+    // 3. Confirmation depth — ZERO TOLERANCE
     if (txData.confirmations < this.minConfirmations) {
-      this.logger.info('MatchingEngine: insufficient confirmations — awaiting', {
-        txHash,
-        have:   txData.confirmations,
-        need:   this.minConfirmations,
+      this.logger.info('MatchingEngine: awaiting confirmations', {
+        txHash, have: txData.confirmations, need: this.minConfirmations,
       });
-      return; // Will be re-emitted by listener on next block
+      return;
     }
 
-    // ── 4. Find matching active invoice ───────────────────────────────────────
+    // 4. Find matching invoice using constants
     const invoice = await Invoice.findOne({
-      uniqueAmount:  txData.amount,       // Exact float match
+      uniqueAmount:  parseFloat(txData.amount),
       walletAddress: txData.toAddress,
-      status:        { $in: ['pending', 'hash_found'] },
-      expiresAt:     { $gt: new Date() }, // Not expired
-      txHash:        null,                // Not already matched
+      status:        { $in: [INVOICE_STATUS.PENDING, INVOICE_STATUS.HASH_FOUND] },
+      expiresAt:     { $gt: new Date() },
+      txHash:        null,
     }).lean();
 
     if (!invoice) {
@@ -98,69 +79,62 @@ class MatchingEngine {
       return;
     }
 
-    // ── 5. Atomic confirm ─────────────────────────────────────────────────────
     await this._confirmPayment(txData, invoice);
   }
 
-  // ─── Atomic Payment Confirmation ─────────────────────────────────────────────
-
   async _confirmPayment(txData, invoice) {
     const session = await mongoose.startSession();
-
     try {
       await session.withTransaction(async () => {
-
-        // Atomic invoice status update — guard against concurrent match
+        // Atomic: update invoice only if still in matching state
         const updated = await Invoice.findOneAndUpdate(
           {
             _id:    invoice._id,
-            status: { $in: ['pending', 'hash_found'] },
-            txHash: null, // Double-check still unmatched
+            status: { $in: [INVOICE_STATUS.PENDING, INVOICE_STATUS.HASH_FOUND] },
+            txHash: null,
           },
           {
             $set: {
-              status:       'confirmed',
-              txHash:       txData.txHash,
-              confirmedAt:  new Date(),
+              status:      INVOICE_STATUS.CONFIRMED,    // ← constant
+              txHash:      txData.txHash,
+              confirmedAt: new Date(),
+              paidAt:      new Date(),
             },
           },
           { new: true, session },
         );
 
         if (!updated) {
-          // Race condition: another process matched this invoice
-          this.logger.warn('MatchingEngine: race condition resolved — already matched', {
-            invoiceId: String(invoice._id),
-            txHash: txData.txHash,
+          this.logger.warn('MatchingEngine: race condition — invoice already matched', {
+            invoiceId: String(invoice._id), txHash: txData.txHash,
           });
           return;
         }
 
-        // Create Transaction record
+        // Record transaction
         await Transaction.create([{
-          txHash:        txData.txHash,
-          network:       txData.network || 'tron',
-          blockNumber:   txData.blockNum || txData.blockNumber || 0,
-          blockTimestamp:txData.timestamp ? new Date(txData.timestamp) : new Date(),
-          fromAddress:   txData.fromAddress,
-          toAddress:     txData.toAddress,
-          amount:        parseFloat(txData.amount),
-          tokenContract: txData.tokenContract,
-          tokenSymbol:   txData.tokenSymbol || 'USDT',
-          status:        'confirmed',
-          matchedInvoiceId: invoice._id,
-          matchedAt:     new Date(),
-          confirmations: txData.confirmations,
-          requiredConfirmations: this.minConfirmations,
-          confirmedAt:   new Date(),
-          detectedAt:    txData.detectedAt ? new Date(txData.detectedAt) : new Date(),
+          txHash:               txData.txHash,
+          network:              txData.network || 'tron',
+          blockNumber:          txData.blockNum || txData.blockNumber || 0,
+          blockTimestamp:       txData.timestamp ? new Date(txData.timestamp * 1000) : new Date(),
+          fromAddress:          txData.fromAddress,
+          toAddress:            txData.toAddress,
+          amount:               parseFloat(txData.amount),
+          tokenContract:        txData.tokenContract,
+          tokenSymbol:          'USDT',
+          status:               'confirmed',
+          matchedInvoiceId:     invoice._id,
+          matchedAt:            new Date(),
+          confirmations:        txData.confirmations,
+          requiredConfirmations:this.minConfirmations,
+          confirmedAt:          new Date(),
+          detectedAt:           txData.detectedAt ? new Date(txData.detectedAt) : new Date(),
         }], { session });
 
-        // Double-entry ledger: MUST be atomic with invoice status update
+        // Double-entry ledger (atomic)
         const baseAmount  = invoice.baseAmount;
         const platformFee = money.round(baseAmount * this.platformFeeRate, 6);
         const netAmount   = money.round(baseAmount - platformFee, 6);
-
         const creditId    = `led_${uuidv4().replace(/-/g, '')}`;
         const feeId       = `led_${uuidv4().replace(/-/g, '')}`;
 
@@ -174,9 +148,9 @@ class MatchingEngine {
             merchantId:         invoice.merchantId,
             invoiceId:          invoice._id,
             counterpartEntryId: feeId,
-            description:        `Payment received — invoice ${invoice.invoiceId}`,
+            description:        `Payment received — ${invoice.invoiceId}`,
             idempotencyKey:     `ledger:recv:${txData.txHash}`,
-            balanceAfter:       0, // Reconciliation will verify
+            balanceAfter:       0,
           },
           {
             entryId:            feeId,
@@ -187,93 +161,72 @@ class MatchingEngine {
             merchantId:         invoice.merchantId,
             invoiceId:          invoice._id,
             counterpartEntryId: creditId,
-            description:        `Platform fee (${(this.platformFeeRate * 100).toFixed(1)}%) — invoice ${invoice.invoiceId}`,
+            description:        `Platform fee ${(this.platformFeeRate * 100).toFixed(1)}% — ${invoice.invoiceId}`,
             idempotencyKey:     `ledger:fee:${txData.txHash}`,
             balanceAfter:       0,
           },
         ], { session });
       });
 
-      this.logger.info('MatchingEngine: payment CONFIRMED + ledger written', {
-        invoiceId:  String(invoice._id),
-        invoiceRef: invoice.invoiceId,
-        txHash:     txData.txHash,
-        amount:     txData.amount,
-        merchantId: String(invoice.merchantId),
+      this.logger.info('MatchingEngine: payment CONFIRMED', {
+        invoiceId: invoice.invoiceId, txHash: txData.txHash,
+        amount: txData.amount, merchantId: String(invoice.merchantId),
       });
 
-      // Publish confirmed event → Notification Service
-      await this.confirmedPublisher.publish(
-        {
-          event:      'payment.confirmed',
-          invoiceId:  String(invoice._id),
-          merchantId: String(invoice.merchantId),
-          txHash:     txData.txHash,
-          amount:     String(invoice.baseAmount),
-          netAmount:  String(money.round(invoice.baseAmount * (1 - this.platformFeeRate), 6)),
-          callbackUrl:invoice.callbackUrl || '',
-        },
-        `confirmed:${txData.txHash}`,
-      );
+      // Emit to notification service
+      await this.confirmedPublisher.publish({
+        event:      'payment.confirmed',
+        invoiceId:  String(invoice._id),
+        merchantId: String(invoice.merchantId),
+        txHash:     txData.txHash,
+        amount:     String(invoice.baseAmount),
+        netAmount:  String(money.round(invoice.baseAmount * (1 - this.platformFeeRate), 6)),
+        callbackUrl:invoice.callbackUrl || '',
+        confirmedAt:new Date().toISOString(),
+      }, `confirmed:${txData.txHash}`);
 
-      // If merchant has auto-withdrawal enabled → queue withdrawal
-      await this.withdrawalPublisher.publish(
-        {
-          merchantId: String(invoice.merchantId),
-          invoiceId:  String(invoice._id),
-          amount:     String(money.round(invoice.baseAmount * (1 - this.platformFeeRate), 6)),
-          event:      'withdrawal.eligible',
-        },
-        `withdrawal:${txData.txHash}`,
-      );
+      // Queue for withdrawal eligibility check
+      await this.withdrawalPublisher.publish({
+        merchantId: String(invoice.merchantId),
+        invoiceId:  String(invoice._id),
+        amount:     String(money.round(invoice.baseAmount * (1 - this.platformFeeRate), 6)),
+      }, `withdrawal:${txData.txHash}`);
 
     } catch (err) {
-      this.logger.error('MatchingEngine: atomic confirm failed', {
-        invoiceId: String(invoice._id),
-        txHash:    txData.txHash,
-        error:     err.message,
+      this.logger.error('MatchingEngine: confirm failed', {
+        invoiceId: String(invoice._id), txHash: txData.txHash, error: err.message,
       });
-      throw err; // Re-throw → BullMQ retries with backoff
+      throw err;
     } finally {
       await session.endSession();
     }
   }
 
-  // ─── No Match Handling ────────────────────────────────────────────────────────
-
   async _handleNoMatch(txData) {
-    // Check for expired invoice (late payment)
     const expired = await Invoice.findOne({
-      uniqueAmount:  txData.amount,
+      uniqueAmount:  parseFloat(txData.amount),
       walletAddress: txData.toAddress,
-      status:        'expired',
+      status:        INVOICE_STATUS.EXPIRED,   // ← constant
     }).lean();
 
     if (expired) {
-      this.logger.warn('MatchingEngine: LATE PAYMENT — invoice already expired', {
-        txHash:    txData.txHash,
-        invoiceId: String(expired._id),
-        amount:    txData.amount,
+      this.logger.warn('MatchingEngine: LATE PAYMENT on expired invoice', {
+        txHash: txData.txHash, invoiceId: String(expired._id),
       });
       await this._recordFailed(txData, 'late_payment', expired._id);
       await this._fireAlert('late_payment', {
-        txHash:    txData.txHash,
-        invoiceId: String(expired._id),
-        amount:    txData.amount,
-        message:   'Payment arrived after invoice expiry — manual review required',
+        txHash: txData.txHash, invoiceId: String(expired._id),
+        amount: txData.amount,
+        message: 'Late payment on expired invoice — manual refund review required',
       });
       return;
     }
 
-    this.logger.warn('MatchingEngine: unmatched transaction', {
-      txHash:    txData.txHash,
-      amount:    txData.amount,
-      toAddress: txData.toAddress,
+    this.logger.warn('MatchingEngine: no matching invoice', {
+      txHash: txData.txHash, amount: txData.amount, toAddress: txData.toAddress,
     });
     await this._recordFailed(txData, 'no_invoice_match');
   }
-
-  // ─── Helpers ────────────────────────────────────────────────────────────────
 
   async _recordFailed(txData, reason, invoiceId = null) {
     try {
@@ -281,29 +234,22 @@ class MatchingEngine {
         { txHash: txData.txHash },
         {
           $setOnInsert: {
-            txHash:        txData.txHash,
-            network:       txData.network || 'tron',
-            blockNumber:   txData.blockNum || txData.blockNumber || 0,
-            blockTimestamp:new Date(),
-            fromAddress:   txData.fromAddress,
-            toAddress:     txData.toAddress,
-            amount:        parseFloat(txData.amount),
-            tokenContract: txData.tokenContract,
-            tokenSymbol:   txData.tokenSymbol || 'USDT',
-            status:        'failed',
-            matchResult:   reason,
-            matchedInvoiceId: invoiceId,
+            txHash: txData.txHash, network: txData.network || 'tron',
+            blockNumber: txData.blockNum || txData.blockNumber || 0,
+            blockTimestamp: new Date(), fromAddress: txData.fromAddress,
+            toAddress: txData.toAddress, amount: parseFloat(txData.amount),
+            tokenContract: txData.tokenContract, tokenSymbol: txData.tokenSymbol || 'USDT',
+            status: 'failed', matchResult: reason, matchedInvoiceId: invoiceId,
             confirmations: txData.confirmations,
             requiredConfirmations: this.minConfirmations,
-            detectedAt:    new Date(),
+            detectedAt: new Date(),
             flaggedForReview: reason === 'late_payment',
-            reviewReason:  reason === 'late_payment' ? 'Late payment — potential refund needed' : null,
           },
         },
         { upsert: true, new: true },
       );
     } catch (err) {
-      this.logger.error('MatchingEngine: failed to record rejected TX', { error: err.message });
+      this.logger.error('MatchingEngine: failed to record TX', { error: err.message });
     }
   }
 
@@ -313,7 +259,7 @@ class MatchingEngine {
         { type, service: 'matching-engine', ...payload },
         `alert:${type}:${Date.now()}`,
       );
-    } catch { /* never crash */ }
+    } catch { /* never crash matching engine */ }
   }
 }
 
