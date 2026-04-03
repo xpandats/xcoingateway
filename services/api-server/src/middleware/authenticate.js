@@ -38,7 +38,7 @@ async function authenticate(req, res, next) {
     // 2. Verify token
     let decoded;
     try {
-      decoded = jwt.verify(token, config.jwt.accessSecret);
+      decoded = jwt.verify(token, config.jwt.accessSecret, { algorithms: ['HS256'] });
     } catch (err) {
       if (err.name === 'TokenExpiredError') {
         throw AppError.unauthorized('Access token expired', ErrorCodes.AUTH_TOKEN_EXPIRED);

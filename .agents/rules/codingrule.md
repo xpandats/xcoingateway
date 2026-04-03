@@ -4,6 +4,8 @@ trigger: always_on
 
 This is a commercial, bank-grade payment system that will handle real money.
 
+never use && and all comaands in single command in git. it alwasy failed with error. alway use single seperate command for each step
+
 mern stack (use .jsx, not .ts), always follow @Description.txt
 git repository : https://github.com/xpandats/xcoingateway.git
 credentials : (configured locally — never commit tokens to repo)

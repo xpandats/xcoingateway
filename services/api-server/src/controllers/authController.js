@@ -134,9 +134,17 @@ exports.register = async (req, res, next) => {
     const data = validate(schemas.auth.register, req.body);
 
     // Check if email already exists
+    // SECURITY: Return same success response to prevent account enumeration.
+    // An attacker must not be able to discover valid emails via registration.
     const existingUser = await User.findOne({ email: data.email });
     if (existingUser) {
-      throw AppError.conflict('Email already registered', ErrorCodes.VALIDATION_FAILED);
+      // Log it internally but don't reveal to client
+      logger.warn('Registration attempt for existing email', { email: data.email, ip: req.ip });
+      // Return same shape as success — attacker can't distinguish
+      return res.status(201).json({
+        success: true,
+        message: 'If this email is not already registered, your account has been created. Pending admin approval.',
+      });
     }
 
     // Hash password

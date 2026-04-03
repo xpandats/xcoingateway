@@ -1,22 +1,27 @@
 'use strict';
 
 /**
- * Express Application Setup.
+ * Express Application — Security-Hardened.
  *
- * Security middleware applied BEFORE any routes:
+ * Middleware stack (applied in strict order):
  *   1. Helmet (security headers)
  *   2. CORS (strict origin whitelist)
- *   3. Rate limiting
- *   4. Body parser with size limit
- *   5. Cookie parser (for refresh tokens)
- *   6. Request ID injection
- *   7. Request logging
+ *   3. Rate limiting (general + auth-specific)
+ *   4. Body parser (strict size limits)
+ *   5. Content-Type enforcement
+ *   6. NoSQL Injection prevention (MUST be after body parser)
+ *   7. HPP (HTTP Parameter Pollution)
+ *   8. Cookie parser
+ *   9. Request ID injection
+ *   10. Request logging
  */
 
 const express = require('express');
 const helmet = require('helmet');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
+const { noSqlSanitize } = require('./middleware/noSqlSanitize');
+const hpp = require('hpp');
 const cookieParser = require('cookie-parser');
 const { randomUUID } = require('@xcg/crypto');
 const { createLogger } = require('@xcg/logger');
@@ -48,7 +53,7 @@ app.use(helmet({
   },
   hsts: { maxAge: 31536000, includeSubDomains: true, preload: true },
   referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
-  crossOriginEmbedderPolicy: false, // Allow API responses
+  crossOriginEmbedderPolicy: false,
 }));
 
 // ─── 2. CORS ──────────────────────────────────────────────────
@@ -56,10 +61,10 @@ app.use(cors({
   origin: config.env === 'production'
     ? [] // Add production domains here
     : ['http://localhost:3000', 'http://localhost:5173', 'http://127.0.0.1:3000'],
-  credentials: true, // For refresh token cookies
+  credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key', 'x-nonce', 'x-timestamp', 'x-signature', 'x-idempotency-key'],
-  maxAge: 86400, // Cache preflight for 24h
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key', 'x-nonce', 'x-timestamp', 'x-signature', 'x-idempotency-key', 'x-request-id'],
+  maxAge: 86400,
 }));
 
 // ─── 3. Rate Limiting ────────────────────────────────────────
@@ -72,7 +77,6 @@ const generalLimiter = rateLimit({
 });
 app.use('/api/', generalLimiter);
 
-// Stricter rate limit for auth endpoints
 const authLimiter = rateLimit({
   windowMs: config.rateLimit.windowMs,
   max: config.rateLimit.authMax,
@@ -81,21 +85,47 @@ const authLimiter = rateLimit({
   message: { error: { code: 'RATE_LIMITED', message: 'Too many authentication attempts' } },
 });
 
-// ─── 4. Body Parser (with size limit) ────────────────────────
-app.use(express.json({ limit: '1mb' }));
-app.use(express.urlencoded({ extended: false, limit: '1mb' }));
+// ─── 4. Body Parser (strict size limits) ─────────────────────
+app.use('/api/v1/auth', express.json({ limit: '10kb' }));
+app.use('/api/', express.json({ limit: '100kb' }));
+app.use(express.json({ limit: '100kb' }));
+app.use(express.urlencoded({ extended: false, limit: '10kb' }));
 
-// ─── 5. Cookie Parser ────────────────────────────────────────
+// ─── 5. Content-Type Enforcement ─────────────────────────────
+app.use('/api/', (req, res, next) => {
+  if (['POST', 'PUT', 'PATCH'].includes(req.method)) {
+    const contentType = req.get('content-type');
+    if (!contentType || !contentType.includes('application/json')) {
+      return res.status(415).json({
+        error: {
+          code: 'UNSUPPORTED_MEDIA_TYPE',
+          message: 'Content-Type must be application/json',
+        },
+      });
+    }
+  }
+  next();
+});
+
+// ─── 6. NoSQL Injection Prevention (AFTER body parser) ───────
+// Custom middleware: strips MongoDB operators ($gt, $ne, $where, etc.)
+// from req.body, req.query, and req.params.
+app.use(noSqlSanitize);
+
+// ─── 7. HTTP Parameter Pollution Prevention ──────────────────
+app.use(hpp());
+
+// ─── 8. Cookie Parser ────────────────────────────────────────
 app.use(cookieParser());
 
-// ─── 6. Request ID Injection ─────────────────────────────────
+// ─── 9. Request ID Injection ─────────────────────────────────
 app.use((req, res, next) => {
   req.requestId = req.headers['x-request-id'] || randomUUID();
   res.setHeader('x-request-id', req.requestId);
   next();
 });
 
-// ─── 7. Request Logging ──────────────────────────────────────
+// ─── 10. Request Logging ─────────────────────────────────────
 app.use((req, res, next) => {
   const start = Date.now();
 
@@ -118,9 +148,6 @@ app.use((req, res, next) => {
 });
 
 // ─── Routes ──────────────────────────────────────────────────
-// Auth rate limiter applied ONLY to brute-force-vulnerable endpoints
-// (login, register, refresh). Protected endpoints (/me, /change-password,
-// /logout) are already guarded by JWT and don't need the strict limit.
 app.use('/api/v1/auth/login', authLimiter);
 app.use('/api/v1/auth/register', authLimiter);
 app.use('/api/v1/auth/refresh', authLimiter);
@@ -139,7 +166,18 @@ app.use((req, res) => {
 
 // ─── Global Error Handler ────────────────────────────────────
 app.use((err, req, res, _next) => {
-  // Handle known operational errors
+  if (err.type === 'entity.parse.failed') {
+    return res.status(400).json({
+      error: { code: 'INVALID_JSON', message: 'Request body contains invalid JSON' },
+    });
+  }
+
+  if (err.type === 'entity.too.large') {
+    return res.status(413).json({
+      error: { code: 'PAYLOAD_TOO_LARGE', message: 'Request body exceeds size limit' },
+    });
+  }
+
   if (err instanceof AppError) {
     logger.warn('Operational error', {
       requestId: req.requestId,
@@ -150,7 +188,6 @@ app.use((err, req, res, _next) => {
     return res.status(err.statusCode).json(err.toJSON());
   }
 
-  // Handle unexpected errors
   logger.error('Unhandled error', {
     requestId: req.requestId,
     error: err.message,
