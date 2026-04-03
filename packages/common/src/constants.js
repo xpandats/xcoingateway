@@ -6,6 +6,7 @@
  */
 
 const ROLES = Object.freeze({
+  SUPER_ADMIN: 'super_admin', // G2: Protected — cannot be modified by any admin
   ADMIN: 'admin',
   MERCHANT: 'merchant',
   SUPPORT: 'support',

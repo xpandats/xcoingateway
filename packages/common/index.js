@@ -11,6 +11,7 @@ const AppError = require('./src/errors/AppError');
 const { HttpStatus, ErrorCodes } = require('./src/errors/codes');
 const constants = require('./src/constants');
 const rbac = require('./src/rbac');
+const { isSuperAdmin, canModifyUser } = require('./src/rbac');
 const { validate, schemas } = require('./src/validation');
 const response = require('./src/response');
 const {
@@ -39,4 +40,7 @@ module.exports = {
   toObjectId,
   buildSort,
   isValidObjectId,
+  // RBAC helpers
+  isSuperAdmin,
+  canModifyUser,
 };

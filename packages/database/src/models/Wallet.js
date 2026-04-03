@@ -71,4 +71,42 @@ walletSchema.methods.toSafeJSON = function () {
   return obj;
 };
 
+/**
+ * K2: Atomic balance increment using MongoDB $inc.
+ *
+ * WHY: Read-modify-write (read balance → balance += amount → save) is NOT atomic.
+ * Two concurrent transactions would cause balance drift (lost update problem).
+ * $inc is the ONLY correct way to update wallet balances.
+ *
+ * USAGE (in wallet/transaction service):
+ *   await Wallet.incrementBalance(walletId, { usdt: 150.5 });   // credit
+ *   await Wallet.incrementBalance(walletId, { usdt: -150.5 });  // debit
+ *
+ * @param {string|ObjectId} walletId
+ * @param {{ usdt?: number, native?: number }} delta - Amounts to add (negative for debit)
+ * @param {mongoose.ClientSession} [session] - Optional transaction session
+ * @returns {Promise<Document>} Updated wallet document
+ */
+walletSchema.statics.incrementBalance = async function (walletId, delta, session = null) {
+  const inc = {};
+  if (typeof delta.usdt === 'number') inc['balance.usdt'] = delta.usdt;
+  if (typeof delta.native === 'number') inc['balance.native'] = delta.native;
+
+  if (Object.keys(inc).length === 0) {
+    throw new Error('incrementBalance: at least one balance field (usdt, native) must be provided');
+  }
+
+  const opts = { new: true };
+  if (session) opts.session = session;
+
+  return this.findByIdAndUpdate(
+    walletId,
+    {
+      $inc: inc,
+      $set: { 'balance.lastUpdated': new Date() },
+    },
+    opts,
+  );
+};
+
 module.exports = mongoose.model('Wallet', walletSchema);

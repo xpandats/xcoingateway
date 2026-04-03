@@ -73,4 +73,29 @@ invoiceSchema.methods.toSafeJSON = function () {
   return obj;
 };
 
+/**
+ * K1: Idempotent invoice creation.
+ * If a duplicate idempotencyKey is used, returns the EXISTING invoice
+ * instead of throwing a MongoServerError 11000.
+ *
+ * USAGE (in invoice service):
+ *   const { invoice, created } = await Invoice.createIdempotent(data);
+ *
+ * @param {object} data - Invoice fields
+ * @returns {{ invoice: Document, created: boolean }}
+ */
+invoiceSchema.statics.createIdempotent = async function (data) {
+  try {
+    const invoice = await this.create(data);
+    return { invoice, created: true };
+  } catch (err) {
+    // 11000 = MongoDB duplicate key — idempotencyKey already exists
+    if (err.code === 11000 && data.idempotencyKey) {
+      const existing = await this.findOne({ idempotencyKey: data.idempotencyKey });
+      if (existing) return { invoice: existing, created: false };
+    }
+    throw err; // Re-throw all other errors
+  }
+};
+
 module.exports = mongoose.model('Invoice', invoiceSchema);

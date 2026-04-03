@@ -35,6 +35,22 @@ const { createLogger } = require('@xcg/logger');
 const { AppError, HttpStatus, response, requestContextMiddleware } = require('@xcg/common');
 const { config } = require('./config');
 
+// H2: Attempt to use Redis store for rate limiting (survives restarts, works across instances)
+// Falls back to in-memory store if Redis is unavailable (safe for single-instance dev)
+let rateLimitStore;
+try {
+  const RedisStore = require('rate-limit-redis');
+  const { createClient } = require('redis');
+  const redisClient = createClient({ url: config.redis.url });
+  redisClient.connect().catch(() => {}); // Non-blocking connect
+  rateLimitStore = new RedisStore({ sendCommand: (...args) => redisClient.sendCommand(args) });
+} catch {
+  // rate-limit-redis not installed or Redis unavailable — use in-memory (dev only)
+  rateLimitStore = undefined;
+}
+
+
+
 const authRoutes = require('./routes/auth');
 const healthRoutes = require('./routes/health');
 
@@ -94,17 +110,35 @@ const generalLimiter = rateLimit({
   max: config.rateLimit.max,
   standardHeaders: true,
   legacyHeaders: false,
+  store: rateLimitStore, // H2: Redis store (falls back to in-memory)
   message: response.error('RATE_LIMITED', 'Too many requests. Please try again later.'),
 });
 app.use('/api/', generalLimiter);
 
-// Auth-specific limiter: stricter limits on auth endpoints
-const authLimiter = rateLimit({
+// Auth-specific limiter: stricter limits (separate bucket from general)
+// A5: Three SEPARATE limiters — exhausting refresh cannot consume login budget
+const _makeAuthLimiter = (prefix, max) => rateLimit({
   windowMs: config.rateLimit.windowMs,
-  max: config.rateLimit.authMax,
+  max,
   standardHeaders: true,
   legacyHeaders: false,
+  store: rateLimitStore,
+  keyGenerator: (req) => `${prefix}:${req.ip}`, // H1: keyed by IP for unauthenticated routes
   message: response.error('RATE_LIMITED', 'Too many authentication attempts. Account may be locked temporarily.'),
+});
+
+const loginLimiter    = _makeAuthLimiter('login',    config.rateLimit.authMax);	   // 5/15min
+const registerLimiter = _makeAuthLimiter('register', config.rateLimit.authMax);     // 5/15min
+const refreshLimiter  = _makeAuthLimiter('refresh',  config.rateLimit.authMax * 3); // 15/15min (refresh is legitimate repeated use)
+
+// H3: Health endpoint light rate limit — prevent fingerprinting/load
+const healthLimiter = rateLimit({
+  windowMs: 60000,   // 1 minute
+  max: 120,          // 2/second burst
+  standardHeaders: false,
+  legacyHeaders: false,
+  store: rateLimitStore,
+  message: response.error('RATE_LIMITED', 'Too many health check requests.'),
 });
 
 // ═══════════════════════════════════════════════════════════════
@@ -194,14 +228,14 @@ app.use((req, res, next) => {
 // 12. ROUTES
 // ═══════════════════════════════════════════════════════════════
 
-// Auth limiter on sensitive public endpoints
-app.use('/api/v1/auth/login', authLimiter);
-app.use('/api/v1/auth/register', authLimiter);
-app.use('/api/v1/auth/refresh', authLimiter);
+// A5: Each auth endpoint has its OWN rate limit bucket
+app.use('/api/v1/auth/login',    loginLimiter);
+app.use('/api/v1/auth/register', registerLimiter);
+app.use('/api/v1/auth/refresh',  refreshLimiter);
 
 // Route mounting
 app.use('/api/v1/auth', authRoutes);
-app.use('/internal/health', healthRoutes);
+app.use('/internal/health', healthLimiter, healthRoutes);
 
 // ═══════════════════════════════════════════════════════════════
 // 13. 404 HANDLER

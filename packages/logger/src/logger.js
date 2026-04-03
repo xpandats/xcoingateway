@@ -34,23 +34,29 @@ const SENSITIVE_FIELDS = new Set([
 
 /**
  * Recursively redact sensitive fields from an object.
+ * I1: Depth cap raised to 10. Error.cause sanitized recursively.
  *
  * @param {object} obj - Object to sanitize
  * @param {number} [depth=0] - Current recursion depth
  * @returns {object} Sanitized copy (original not modified)
  */
 function sanitize(obj, depth = 0) {
-  if (depth > 5 || obj === null || obj === undefined) return obj;
+  if (depth > 10 || obj === null || obj === undefined) return obj;
   if (typeof obj !== 'object') return obj;
   if (obj instanceof Error) {
-    return {
+    const sanitized = {
       name: obj.name,
-      message: obj.message,
+      // I2: Strip user-provided values from Mongoose CastError and ValidationError messages
+      message: _sanitizeErrorMessage(obj),
       code: obj.code,
       statusCode: obj.statusCode,
-      // Stack traces only in non-production
       ...(process.env.NODE_ENV !== 'production' && { stack: obj.stack }),
     };
+    // I1: Recursively sanitize Error.cause (nested errors)
+    if (obj.cause) {
+      sanitized.cause = sanitize(obj.cause, depth + 1);
+    }
+    return sanitized;
   }
 
   const sanitized = Array.isArray(obj) ? [] : {};
@@ -64,6 +70,31 @@ function sanitize(obj, depth = 0) {
     }
   }
   return sanitized;
+}
+
+/**
+ * I2: Strip user-provided values from Mongoose error messages.
+ * CastError: "Cast to ObjectId failed for value \"INJECTION\" at path \"_id\""
+ * ValidationError: may include the invalid value
+ *
+ * @param {Error} err
+ * @returns {string} Safe error message
+ */
+function _sanitizeErrorMessage(err) {
+  if (!err || !err.message) return '';
+
+  // Strip Mongoose CastError values (the \"..\" part contains user input)
+  if (err.name === 'CastError') {
+    return `Invalid value for field '${err.path}' (expected ${err.kind})`;
+  }
+
+  // Strip Mongoose ValidationError — return only field names, not values
+  if (err.name === 'ValidationError' && err.errors) {
+    const fields = Object.keys(err.errors).join(', ');
+    return `Validation failed for field(s): ${fields}`;
+  }
+
+  return err.message;
 }
 
 /**

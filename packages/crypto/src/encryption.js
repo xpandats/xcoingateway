@@ -167,13 +167,26 @@ function encryptPrivateKey(privateKey) {
 
 /**
  * Decrypt a private key.
- * CALLER is responsible for zeroing after use.
+ *
+ * E1 FIX: Returns Buffer (not string) so callers can zero memory after use.
+ *   JS strings are immutable — you CANNOT zero them. Buffers can be zeroed.
+ *
+ * USAGE:
+ *   const keyBuf = decryptPrivateKey(encryptedKey);
+ *   try {
+ *     // use keyBuf.toString('utf8') only where needed
+ *   } finally {
+ *     keyBuf.fill(0); // Zero private key from memory
+ *   }
  *
  * @param {string} encryptedKey - Encrypted private key
- * @returns {string} Decrypted private key — ZERO AFTER USE
+ * @returns {Buffer} Decrypted private key as Buffer — CALLER MUST ZERO WITH .fill(0)
  */
 function decryptPrivateKey(encryptedKey) {
-  return decrypt(encryptedKey);
+  const plaintext = decrypt(encryptedKey);
+  return Buffer.from(plaintext, 'utf8');
+  // Original string 'plaintext' remains in GC-eligible memory but
+  // callers can zero the returned Buffer immediately after use.
 }
 
 module.exports = {

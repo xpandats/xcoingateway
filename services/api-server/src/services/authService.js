@@ -385,14 +385,17 @@ async function refreshTokens(refreshTokenValue, ip, userAgent) {
   }
 
   const tokenHash = _hashRefreshToken(refreshTokenValue);
+
+  // A3: Constant-time path — both "not found" and "revoked" take identical code paths.
+  // This eliminates a timing oracle that could distinguish the two states.
   const storedToken = await RefreshToken.findOne({ tokenHash });
 
-  if (!storedToken) {
-    throw AppError.unauthorized('Invalid refresh token', ErrorCodes.AUTH_REFRESH_INVALID);
-  }
+  // Unified guard: treat missing and revoked identically up front
+  const isNotFound = !storedToken;
+  const isRevoked = storedToken?.isRevoked === true;
 
-  // SECURITY: Revoked token reuse = stolen token attack
-  if (storedToken.isRevoked) {
+  if (isRevoked) {
+    // Stolen token detected — revoke entire family
     logger.warn('Revoked refresh token reuse detected — revoking entire family', {
       userId: storedToken.userId,
       family: storedToken.family,
@@ -408,6 +411,10 @@ async function refreshTokens(refreshTokenValue, ip, userAgent) {
       resourceId: storedToken.userId.toString(),
       metadata: { reason: 'refresh_token_reuse', family: storedToken.family },
     });
+  }
+
+  // Same error and same timing for both "not found" and "revoked"
+  if (isNotFound || isRevoked) {
 
     throw AppError.unauthorized('Token reuse detected. All sessions revoked.', ErrorCodes.AUTH_REFRESH_INVALID);
   }

@@ -17,8 +17,16 @@ const { ROLES } = require('./constants');
  * Each permission is a string in format "resource:action".
  */
 const PERMISSIONS = Object.freeze({
+  // G2: SUPER_ADMIN has all permissions AND is protected from modification by any other role
+  [ROLES.SUPER_ADMIN]: Object.freeze([
+    'users:*', 'merchants:*', 'wallets:*', 'invoices:*',
+    'transactions:*', 'withdrawals:*', 'disputes:*',
+    'config:*', 'audit:*', 'dashboard:*', 'reconciliation:*',
+    'fraud:*', 'system:*',
+  ]),
+
   [ROLES.ADMIN]: Object.freeze([
-    // Full system access
+    // Full system access — but cannot touch SUPER_ADMIN accounts
     'users:*',
     'merchants:*',
     'wallets:*',
@@ -120,10 +128,39 @@ function getPermissions(role) {
   return PERMISSIONS[role] || [];
 }
 
+/**
+ * G2: Check if a role is the protected super admin.
+ * SUPER_ADMIN accounts cannot be modified by any other role including ADMIN.
+ *
+ * @param {string} role - Role to check
+ * @returns {boolean}
+ */
+function isSuperAdmin(role) {
+  return role === ROLES.SUPER_ADMIN;
+}
+
+/**
+ * G2: Check if an actor can modify a target user.
+ * Enforces SUPER_ADMIN protection — must be called in any user modify/delete service.
+ *
+ * @param {string} actorRole - Role of the person making the change
+ * @param {string} targetRole - Role of the user being modified
+ * @returns {boolean} true if the modification is allowed
+ */
+function canModifyUser(actorRole, targetRole) {
+  // Nobody can modify a SUPER_ADMIN except another SUPER_ADMIN
+  if (isSuperAdmin(targetRole) && !isSuperAdmin(actorRole)) {
+    return false;
+  }
+  return true;
+}
+
 module.exports = {
   PERMISSIONS,
   hasPermission,
   hasAllPermissions,
   hasAnyPermission,
   getPermissions,
+  isSuperAdmin,
+  canModifyUser,
 };
