@@ -4,7 +4,7 @@ const mongoose = require('mongoose');
 const { WITHDRAWAL_STATUS } = require('@xcg/common').constants;
 
 const withdrawalSchema = new mongoose.Schema({
-  withdrawalId: { type: String, required: true, unique: true, index: true },
+  withdrawalId: { type: String, required: true, unique: true },
   merchantId: { type: mongoose.Schema.Types.ObjectId, ref: 'Merchant', required: true, index: true },
   amount: { type: Number, required: true, min: 0.000001 },
   fee: { type: Number, default: 0 },

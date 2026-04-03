@@ -150,6 +150,17 @@ const AUDIT_ACTIONS = Object.freeze({
   RECONCILIATION_MISMATCH: 'reconciliation.mismatch',
 });
 
+const AUTH = Object.freeze({
+  MAX_FAILED_ATTEMPTS: 5,           // Lock account after this many failures
+  MAX_SESSIONS_PER_USER: 5,         // Concurrent refresh token sessions
+  PASSWORD_HISTORY_SIZE: 5,         // Reject reuse of last N passwords
+  BCRYPT_ROUNDS: 12,                // Default bcrypt salt rounds
+  TOTP_CODE_LENGTH: 6,              // TOTP code digits
+  REFRESH_TOKEN_GRACE_PERIOD: 86400, // TTL auto-delete grace (seconds)
+  NONCE_TTL_SECONDS: 300,           // Anti-replay nonce window (5 min)
+  TIMESTAMP_TOLERANCE_SECONDS: 30,  // API request timestamp tolerance
+});
+
 const TRON = Object.freeze({
   MAINNET_USDT_CONTRACT: 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t',
   SHASTA_USDT_CONTRACT: 'TG3XXyExBkPp9nzdajDZsozEu4BkaSJozs',
@@ -161,6 +172,7 @@ const TRON = Object.freeze({
 
 module.exports = {
   ROLES,
+  AUTH,
   INVOICE_STATUS,
   TX_STATUS,
   WITHDRAWAL_STATUS,

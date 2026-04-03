@@ -5,9 +5,9 @@ const { INVOICE_STATUS } = require('@xcg/common').constants;
 
 const invoiceSchema = new mongoose.Schema({
   // Identifiers
-  invoiceId: { type: String, required: true, unique: true, index: true }, // Public-facing ID (inv_xxx)
+  invoiceId: { type: String, required: true, unique: true }, // Public-facing ID (inv_xxx)
   merchantId: { type: mongoose.Schema.Types.ObjectId, ref: 'Merchant', required: true, index: true },
-  idempotencyKey: { type: String, sparse: true, index: true }, // Prevents duplicate creation
+  idempotencyKey: { type: String, sparse: true, unique: true }, // Prevents duplicate creation
 
   // Amount
   baseAmount: { type: Number, required: true }, // Original amount requested (e.g., 150.00)

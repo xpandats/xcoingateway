@@ -39,6 +39,7 @@ class AppError extends Error {
    */
   toJSON() {
     const response = {
+      success: false,
       error: {
         code: this.code,
         message: this.message,

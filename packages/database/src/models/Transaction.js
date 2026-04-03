@@ -5,7 +5,7 @@ const { TX_STATUS } = require('@xcg/common').constants;
 
 const transactionSchema = new mongoose.Schema({
   // Blockchain data
-  txHash: { type: String, required: true, unique: true, index: true },
+  txHash: { type: String, required: true, unique: true },
   network: { type: String, required: true, default: 'tron' },
   blockNumber: { type: Number, required: true, index: true },
   blockTimestamp: { type: Date, required: true },

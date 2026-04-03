@@ -16,6 +16,7 @@ const WebhookDelivery = require('./src/models/WebhookDelivery');
 const SystemConfig = require('./src/models/SystemConfig');
 const RefreshToken = require('./src/models/RefreshToken');
 const UsedTotpCode = require('./src/models/UsedTotpCode');
+const UsedNonce = require('./src/models/UsedNonce');
 
 module.exports = {
   connectDB,
@@ -34,4 +35,5 @@ module.exports = {
   SystemConfig,
   RefreshToken,
   UsedTotpCode,
+  UsedNonce,
 };

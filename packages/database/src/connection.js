@@ -1,13 +1,15 @@
 'use strict';
 
 /**
- * MongoDB Connection Manager.
+ * @module @xcg/database/connection
  *
- * Handles:
- *   - Connection with retry logic
+ * MongoDB Connection Manager — Bank-Grade.
+ *
+ * Features:
+ *   - Connection with exponential backoff retry
+ *   - Event listeners registered ONCE (no leak on reconnect)
  *   - Graceful disconnect on shutdown
- *   - Connection event monitoring
- *   - Separate connections per environment
+ *   - Connection health monitoring
  */
 
 const mongoose = require('mongoose');
@@ -16,34 +18,22 @@ const { createLogger } = require('@xcg/logger');
 const logger = createLogger('database');
 
 let isConnected = false;
+let listenersRegistered = false;
 
 /**
- * Connect to MongoDB with retry logic.
- *
- * @param {string} [uri] - MongoDB URI (defaults to MONGODB_URI env var)
- * @param {object} [options] - Mongoose connection options
- * @returns {Promise<void>}
+ * Register connection event listeners ONCE.
+ * Prevents listener stacking if connectDB() is called multiple times.
  */
-async function connectDB(uri = null, options = {}) {
-  const mongoUri = uri || process.env.MONGODB_URI;
+function _registerListeners(uri) {
+  if (listenersRegistered) return;
+  listenersRegistered = true;
 
-  if (!mongoUri) {
-    throw new Error('FATAL: MONGODB_URI is not set. Cannot connect to database.');
-  }
+  // Redact credentials from URI for logging
+  const safeUri = uri.replace(/\/\/.*@/, '//<credentials>@');
 
-  const defaultOptions = {
-    maxPoolSize: 10,
-    minPoolSize: 2,
-    serverSelectionTimeoutMS: 5000,
-    heartbeatFrequencyMS: 10000,
-    retryWrites: true,
-    ...options,
-  };
-
-  // Connection event handlers
   mongoose.connection.on('connected', () => {
     isConnected = true;
-    logger.info('MongoDB connected', { uri: mongoUri.replace(/\/\/.*@/, '//<credentials>@') });
+    logger.info('MongoDB connected', { uri: safeUri });
   });
 
   mongoose.connection.on('disconnected', () => {
@@ -55,7 +45,39 @@ async function connectDB(uri = null, options = {}) {
     logger.error('MongoDB connection error', { error: err.message });
   });
 
-  // Retry connection with backoff
+  mongoose.connection.on('reconnected', () => {
+    isConnected = true;
+    logger.info('MongoDB reconnected');
+  });
+}
+
+/**
+ * Connect to MongoDB with retry logic.
+ *
+ * @param {string} [uri] - MongoDB URI (defaults to MONGODB_URI env var)
+ * @param {object} [options] - Mongoose connection options
+ * @returns {Promise<void>}
+ * @throws {Error} After max retries exceeded
+ */
+async function connectDB(uri = null, options = {}) {
+  const mongoUri = uri || process.env.MONGODB_URI;
+
+  if (!mongoUri) {
+    throw new Error('FATAL: MONGODB_URI is not set. Cannot connect to database.');
+  }
+
+  // Register listeners ONCE before any connection attempt
+  _registerListeners(mongoUri);
+
+  const defaultOptions = {
+    maxPoolSize: 10,
+    minPoolSize: 2,
+    serverSelectionTimeoutMS: 5000,
+    heartbeatFrequencyMS: 10000,
+    retryWrites: true,
+    ...options,
+  };
+
   const maxRetries = 5;
   let retries = 0;
 
@@ -66,7 +88,7 @@ async function connectDB(uri = null, options = {}) {
       return;
     } catch (err) {
       retries++;
-      const delay = Math.min(1000 * Math.pow(2, retries), 30000); // Exponential backoff, max 30s
+      const delay = Math.min(1000 * Math.pow(2, retries), 30000);
       logger.error(`MongoDB connection attempt ${retries}/${maxRetries} failed`, {
         error: err.message,
         retryInMs: delay,
@@ -83,7 +105,6 @@ async function connectDB(uri = null, options = {}) {
 
 /**
  * Gracefully disconnect from MongoDB.
- * Call this during service shutdown.
  */
 async function disconnectDB() {
   if (mongoose.connection.readyState !== 0) {

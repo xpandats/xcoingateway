@@ -1,32 +1,37 @@
 'use strict';
 
 /**
- * AES-256-GCM Encryption Module.
+ * @module @xcg/crypto/encryption
  *
- * Used for encrypting private keys, API secrets, and sensitive data.
+ * AES-256-GCM Encryption with Key Versioning.
  *
- * Security guarantees:
- *   - AES-256-GCM provides both confidentiality and integrity
- *   - Unique IV (Initialization Vector) per encryption — same plaintext → different ciphertext
- *   - Auth tag prevents tampering — any modification is detected
- *   - Master key from ENV, never in DB, never in code
- *   - Key zeroed from memory after use via Buffer.fill(0)
+ * BANK-GRADE REQUIREMENTS:
+ *   - AES-256-GCM: Authenticated encryption (confidentiality + integrity)
+ *   - Unique IV per encryption: same plaintext → different ciphertext every time
+ *   - Auth tag: tampering detection
+ *   - Key versioning: old encrypted data remains readable after key rotation
+ *   - Memory safety: keys zeroed from memory after use
  *
- * Output format: iv:authTag:ciphertext (all hex-encoded, colon-separated)
+ * Output format (versioned):
+ *   v1:iv:authTag:ciphertext  (all hex-encoded, colon-separated)
+ *
+ * Legacy format (auto-detected for backward compatibility):
+ *   iv:authTag:ciphertext     (no version prefix)
  */
 
 const crypto = require('crypto');
 
+const CURRENT_KEY_VERSION = 'v1';
 const ALGORITHM = 'aes-256-gcm';
-const IV_LENGTH = 16;       // 128-bit IV (recommended for GCM)
+const IV_LENGTH = 16;        // 128-bit IV (NIST recommended for GCM)
 const AUTH_TAG_LENGTH = 16;  // 128-bit auth tag
 const KEY_LENGTH = 32;       // 256-bit key
 
 /**
  * Get the master encryption key from environment.
- * Validates key length and format.
+ * Validates key length and hex format.
  *
- * @returns {Buffer} 32-byte key buffer
+ * @returns {Buffer} 32-byte key buffer — CALLER MUST ZERO AFTER USE
  * @throws {Error} If master key is missing or invalid
  */
 function getMasterKey() {
@@ -41,18 +46,17 @@ function getMasterKey() {
 }
 
 /**
- * Encrypt plaintext using AES-256-GCM.
+ * Encrypt plaintext using AES-256-GCM with key versioning.
  *
- * @param {string} plaintext - The data to encrypt
+ * @param {string} plaintext - Data to encrypt
  * @param {Buffer} [masterKey] - Optional custom key (defaults to ENV master key)
- * @returns {string} Encrypted string in format "iv:authTag:ciphertext" (hex)
+ * @returns {string} Versioned encrypted string: "v1:iv:authTag:ciphertext"
  */
 function encrypt(plaintext, masterKey = null) {
   const key = masterKey || getMasterKey();
   let iv = null;
 
   try {
-    // Generate unique IV for this encryption
     iv = crypto.randomBytes(IV_LENGTH);
 
     const cipher = crypto.createCipheriv(ALGORITHM, key, iv, {
@@ -61,49 +65,51 @@ function encrypt(plaintext, masterKey = null) {
 
     let encrypted = cipher.update(plaintext, 'utf8', 'hex');
     encrypted += cipher.final('hex');
-
     const authTag = cipher.getAuthTag();
 
-    // Format: iv:authTag:ciphertext
-    return `${iv.toString('hex')}:${authTag.toString('hex')}:${encrypted}`;
+    // Versioned format: v1:iv:authTag:ciphertext
+    return `${CURRENT_KEY_VERSION}:${iv.toString('hex')}:${authTag.toString('hex')}:${encrypted}`;
   } finally {
-    // Zero the key from memory if we created it
-    if (!masterKey && key) {
-      key.fill(0);
-    }
-    if (iv) {
-      iv.fill(0);
-    }
+    if (!masterKey && key) key.fill(0);
+    if (iv) iv.fill(0);
   }
 }
 
 /**
  * Decrypt ciphertext using AES-256-GCM.
+ * Automatically handles both versioned (v1:iv:tag:cipher) and
+ * legacy (iv:tag:cipher) formats.
  *
- * @param {string} encryptedData - Encrypted string in format "iv:authTag:ciphertext" (hex)
- * @param {Buffer} [masterKey] - Optional custom key (defaults to ENV master key)
+ * @param {string} encryptedData - Encrypted string (versioned or legacy)
+ * @param {Buffer} [masterKey] - Optional custom key
  * @returns {string} Decrypted plaintext
- * @throws {Error} If decryption fails (wrong key, tampered data, invalid format)
+ * @throws {Error} If decryption fails
  */
 function decrypt(encryptedData, masterKey = null) {
   const key = masterKey || getMasterKey();
 
   try {
     const parts = encryptedData.split(':');
-    if (parts.length !== 3) {
-      throw new Error('Invalid encrypted data format: expected iv:authTag:ciphertext');
+    let ivHex, authTagHex, ciphertext;
+
+    if (parts[0] === 'v1') {
+      // Versioned format: v1:iv:authTag:ciphertext
+      if (parts.length !== 4) {
+        throw new Error('Invalid v1 encrypted data format');
+      }
+      [, ivHex, authTagHex, ciphertext] = parts;
+    } else if (parts.length === 3) {
+      // Legacy format: iv:authTag:ciphertext (backward compatible)
+      [ivHex, authTagHex, ciphertext] = parts;
+    } else {
+      throw new Error('Invalid encrypted data format: unrecognized format');
     }
 
-    const [ivHex, authTagHex, ciphertext] = parts;
     const iv = Buffer.from(ivHex, 'hex');
     const authTag = Buffer.from(authTagHex, 'hex');
 
-    if (iv.length !== IV_LENGTH) {
-      throw new Error('Invalid IV length');
-    }
-    if (authTag.length !== AUTH_TAG_LENGTH) {
-      throw new Error('Invalid auth tag length');
-    }
+    if (iv.length !== IV_LENGTH) throw new Error('Invalid IV length');
+    if (authTag.length !== AUTH_TAG_LENGTH) throw new Error('Invalid auth tag length');
 
     const decipher = crypto.createDecipheriv(ALGORITHM, key, iv, {
       authTagLength: AUTH_TAG_LENGTH,
@@ -115,44 +121,56 @@ function decrypt(encryptedData, masterKey = null) {
 
     return decrypted;
   } finally {
-    // Zero the key from memory if we created it
-    if (!masterKey && key) {
-      key.fill(0);
-    }
+    if (!masterKey && key) key.fill(0);
   }
 }
 
 /**
- * Encrypt a private key with additional safety:
- * - Validates the key looks like a private key
- * - Returns the encrypted key
- * - Zeroes the plaintext key from memory
+ * Re-encrypt data with current key version.
+ * Used during key rotation: decrypt old → encrypt new.
  *
- * @param {string} privateKey - The private key to encrypt
- * @returns {string} Encrypted private key
+ * @param {string} encryptedData - Old encrypted data (any version)
+ * @param {Buffer} [oldKey] - Optional old key (defaults to current ENV key)
+ * @param {Buffer} [newKey] - Optional new key (defaults to current ENV key)
+ * @returns {string} Re-encrypted with current version
+ */
+function reEncrypt(encryptedData, oldKey = null, newKey = null) {
+  const plaintext = decrypt(encryptedData, oldKey);
+  return encrypt(plaintext, newKey);
+}
+
+/**
+ * Check if data is using the latest encryption version.
+ *
+ * @param {string} encryptedData - Encrypted string
+ * @returns {boolean} true if using current version
+ */
+function isCurrentVersion(encryptedData) {
+  return encryptedData.startsWith(`${CURRENT_KEY_VERSION}:`);
+}
+
+/**
+ * Encrypt a private key with additional safety.
+ *
+ * @param {string} privateKey - Private key to encrypt
+ * @returns {string} Versioned encrypted private key
  */
 function encryptPrivateKey(privateKey) {
   let keyBuffer = null;
   try {
-    // Convert to buffer so we can zero it after
     keyBuffer = Buffer.from(privateKey, 'utf8');
-    const encrypted = encrypt(privateKey);
-    return encrypted;
+    return encrypt(privateKey);
   } finally {
-    // CRITICAL: Zero the plaintext private key from memory
-    if (keyBuffer) {
-      keyBuffer.fill(0);
-    }
+    if (keyBuffer) keyBuffer.fill(0);
   }
 }
 
 /**
- * Decrypt a private key with safety:
- * - Returns the key string
- * - CALLER is responsible for zeroing after use
+ * Decrypt a private key.
+ * CALLER is responsible for zeroing after use.
  *
- * @param {string} encryptedKey - The encrypted private key
- * @returns {string} Decrypted private key — ZERO THIS AFTER USE
+ * @param {string} encryptedKey - Encrypted private key
+ * @returns {string} Decrypted private key — ZERO AFTER USE
  */
 function decryptPrivateKey(encryptedKey) {
   return decrypt(encryptedKey);
@@ -161,10 +179,13 @@ function decryptPrivateKey(encryptedKey) {
 module.exports = {
   encrypt,
   decrypt,
+  reEncrypt,
+  isCurrentVersion,
   encryptPrivateKey,
   decryptPrivateKey,
   ALGORITHM,
   IV_LENGTH,
   AUTH_TAG_LENGTH,
   KEY_LENGTH,
+  CURRENT_KEY_VERSION,
 };

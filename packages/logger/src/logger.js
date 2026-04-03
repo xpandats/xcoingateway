@@ -22,12 +22,14 @@ const LOG_LEVELS = { error: 0, warn: 1, info: 2, debug: 3 };
  * If these keys are found in log data, they are redacted.
  */
 const SENSITIVE_FIELDS = new Set([
-  'password', 'newPassword', 'currentPassword', 'confirmPassword',
-  'privateKey', 'encryptedPrivateKey', 'masterKey',
-  'secret', 'apiSecret', 'webhookSecret',
-  'token', 'accessToken', 'refreshToken',
+  'password', 'newpassword', 'currentpassword', 'confirmpassword',
+  'privatekey', 'encryptedprivatekey', 'masterkey',
+  'secret', 'apisecret', 'webhooksecret',
+  'token', 'accesstoken', 'refreshtoken',
   'authorization', 'cookie',
-  'totpSecret', 'totpCode',
+  'totpsecret', 'totpcode',
+  'twofactorsecret', 'passwordhash', 'passwordhistory',
+  'keyhash', 'tokenhash', 'salt',
 ]);
 
 /**

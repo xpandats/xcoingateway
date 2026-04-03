@@ -6,12 +6,28 @@
   "scripts": {
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
-    "seed:admin": "node src/scripts/seedAdmin.js"
+    "seed:admin": "node src/scripts/seedAdmin.js",
+    "test": "jest --testEnvironment=node --detectOpenHandles --forceExit",
+    "test:watch": "jest --watch --testEnvironment=node",
+    "test:coverage": "jest --coverage --testEnvironment=node --detectOpenHandles --forceExit"
+  },
+  "jest": {
+    "testMatch": ["**/tests/**/*.test.js"],
+    "testEnvironment": "node",
+    "testTimeout": 30000,
+    "verbose": true,
+    "transformIgnorePatterns": [
+      "node_modules/(?!(@scure|otplib|@otplib)/)"
+    ]
   },
   "dependencies": {
     "@xcg/common": "*",
     "@xcg/crypto": "*",
-    "@xcg/logger": "*",
-    "@xcg/database": "*"
+    "@xcg/database": "*",
+    "@xcg/logger": "*"
+  },
+  "devDependencies": {
+    "jest": "^30.3.0",
+    "supertest": "^7.2.2"
   }
 }
