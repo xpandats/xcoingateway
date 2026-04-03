@@ -52,8 +52,14 @@ try {
 
 
 
-const authRoutes = require('./routes/auth');
-const healthRoutes = require('./routes/health');
+// ─── Route Imports ───────────────────────────────────────────────────────────
+const authRoutes       = require('./routes/auth');
+const healthRoutes     = require('./routes/health');
+const walletRoutes     = require('./routes/wallets');
+const merchantRoutes   = require('./routes/merchants');
+// Factory routes (need redisClient injected at mount time)
+const invoiceRouteFactory    = require('./routes/invoices');
+const withdrawalRouteFactory = require('./routes/withdrawals');
 
 const logger = createLogger('api-server');
 const app = express();
@@ -286,8 +292,17 @@ app.use('/api/v1/auth/register', registerLimiter);
 app.use('/api/v1/auth/refresh',  refreshLimiter);
 
 // Route mounting
-app.use('/api/v1/auth', authRoutes);
-app.use('/internal/health', healthLimiter, healthRoutes);
+app.use('/api/v1/auth',             authRoutes);
+app.use('/internal/health',         healthLimiter, healthRoutes);
+
+// ─── Admin routes (authenticate + authorize('admin') + IP whitelist inside) ───
+app.use('/admin/wallets',           walletRoutes);
+app.use('/admin/merchants',         merchantRoutes);
+
+// ─── Merchant API (HMAC-signed) ── redisClient injected for nonce checks ──────
+// app.locals.redis is set by createApp(redisClient) factory below
+app.use('/api/v1/payments',         (req, res, next) => invoiceRouteFactory(req.app.locals.redis)(req, res, next));
+app.use('/api/v1/withdrawals',      (req, res, next) => withdrawalRouteFactory(req.app.locals.redis)(req, res, next));
 
 // ═══════════════════════════════════════════════════════════════
 // 13. 404 HANDLER
@@ -350,4 +365,18 @@ app.use((err, req, res, _next) => {
   );
 });
 
-module.exports = app;
+/**
+ * Factory function — creates the Express app with a Redis client injected.
+ * Needed so merchant API auth middleware can use Redis for nonce deduplication.
+ *
+ * @param {object} [redisClient] - IORedis instance
+ * @returns {express.Application}
+ */
+function createApp(redisClient) {
+  if (redisClient) {
+    app.locals.redis = redisClient;
+  }
+  return app;
+}
+
+module.exports = { app, createApp };

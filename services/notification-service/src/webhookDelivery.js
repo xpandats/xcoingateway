@@ -24,8 +24,9 @@
 
 const crypto  = require('crypto');
 const axios   = require('axios');
-const { WebhookDelivery, Merchant, Invoice } = require('@xcg/database');
-const { validateOutboundUrl } = require('@xcg/common');    // SSRF protection
+const { WebhookDelivery, Merchant } = require('@xcg/database');
+// validateOutboundUrl is in the ssrfProtection middleware (server-side, DNS-resolving SSRF check)
+const { validateOutboundUrl } = require('../../middleware/ssrfProtection');
 
 const DELIVERY_TIMEOUT_MS = 10_000; // 10 seconds
 
