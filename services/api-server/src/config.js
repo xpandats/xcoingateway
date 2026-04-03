@@ -133,7 +133,6 @@ function validateConfig() {
     if (config.networkMode !== 'MAINNET') {
       errors.push('Production environment MUST use NETWORK_MODE=MAINNET');
     }
-
     // L1: MongoDB URI must have credentials in production
     if (config.db.uri.includes('localhost')) {
       errors.push('Production MUST NOT use localhost MongoDB');
@@ -141,10 +140,41 @@ function validateConfig() {
     if (!config.db.uri.includes('@')) {
       errors.push('Production MongoDB URI MUST include credentials (user:password@host)');
     }
-
-    // L2: TLS must be enabled in production (checked via URI param or separate config)
+    // L2: TLS must be enabled in production
     if (!config.db.uri.includes('tls=true') && !config.db.uri.includes('ssl=true')) {
       errors.push('Production MongoDB URI MUST enable TLS (add ?tls=true to URI)');
+    }
+  }
+
+  // T-2/CRYPTO-2: All 4 secrets MUST be distinct from each other.
+  // Reusing secrets across purposes destroys their cryptographic independence.
+  const secrets = {
+    JWT_ACCESS_SECRET: config.jwt.accessSecret,
+    JWT_REFRESH_SECRET: config.jwt.refreshSecret,
+    MASTER_ENCRYPTION_KEY: config.encryption.masterKey,
+    HMAC_SECRET: config.hmac.secret,
+  };
+  const secretEntries = Object.entries(secrets).filter(([, v]) => v);
+  for (let i = 0; i < secretEntries.length; i++) {
+    for (let j = i + 1; j < secretEntries.length; j++) {
+      const [nameA, valA] = secretEntries[i];
+      const [nameB, valB] = secretEntries[j];
+      if (valA === valB) {
+        errors.push(`SECURITY: ${nameA} and ${nameB} must NOT be the same value`);
+      }
+    }
+  }
+
+  // SSRF-2: TronGrid API URL must be a known trusted domain
+  const TRONGRID_ALLOWED = [
+    'https://api.trongrid.io',
+    'https://api.shasta.trongrid.io',
+    'https://nile.trongrid.io',
+  ];
+  if (config.tron.apiUrl) {
+    const isAllowed = TRONGRID_ALLOWED.some((allowed) => config.tron.apiUrl.startsWith(allowed));
+    if (!isAllowed) {
+      errors.push(`SSRF-2: TRONGRID_API_URL must be one of: ${TRONGRID_ALLOWED.join(', ')} — got: ${config.tron.apiUrl}`);
     }
   }
 

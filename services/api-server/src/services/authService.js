@@ -25,7 +25,7 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcrypt');
 const crypto = require('crypto');
 const mongoose = require('mongoose');
-const { authenticator } = require('otplib');
+const { TOTP, generateSecret } = require('otplib');
 const { User, RefreshToken, UsedTotpCode, AuditLog } = require('@xcg/database');
 const { AppError, ErrorCodes, constants, getRequestContext, validateObjectId } = require('@xcg/common');
 const { encrypt, decrypt, randomHex } = require('@xcg/crypto');
@@ -36,16 +36,29 @@ const logger = createLogger('auth-service');
 const audit = createAuditLogger(AuditLog);
 const { AUTH, ROLES, AUDIT_ACTIONS } = constants;
 
+// CRYPTO-1: Only accept TOTP codes valid in the EXACT current 30s window.
+// Default window of ±1 gives 90s attack window. Zero = 30s only.
+// otplib v13: use class-based instantiation with options
+const totp = new TOTP({ window: 0 });
+
 // ═══════════════════════════════════════════════════════════════
 // INTERNAL HELPERS — Pure functions, no HTTP dependency
 // ═══════════════════════════════════════════════════════════════
 
 /**
  * Generate a signed JWT access token.
+ * T-1: Includes ipPrefix claim for device-binding anomaly detection.
+ *
  * @param {object} user - Mongoose User document
+ * @param {string} [ip] - Client IP (first 3 octets hashed for binding)
  * @returns {string} Signed JWT
  */
-function _generateAccessToken(user) {
+function _generateAccessToken(user, ip = '') {
+  // T-1: Bind token to first 3 IP octets (not full IP — respects CGNAT/dynamic IPs)
+  // A stolen token from a radically different IP will mismatch on the authenticate middleware
+  const ipPrefix = ip ? ip.split('.').slice(0, 3).join('.') : '';
+  const ipPrefixHash = crypto.createHash('sha256').update(ipPrefix).digest('hex').slice(0, 8);
+
   return jwt.sign(
     {
       userId: user._id.toString(),
@@ -53,6 +66,7 @@ function _generateAccessToken(user) {
       role: user.role,
       merchantId: user.merchantId?.toString() || null,
       jti: randomHex(16), // Unique token ID for future revocation
+      iph: ipPrefixHash,  // T-1: IP prefix hash (not full IP, not logged)
     },
     config.jwt.accessSecret,
     { expiresIn: config.jwt.accessExpiry, algorithm: 'HS256' },
@@ -123,7 +137,8 @@ async function _audit(action, fields = {}) {
  */
 async function _validateTOTP(userId, code, encryptedSecret) {
   const secret = decrypt(encryptedSecret);
-  const isValid = authenticator.verify({ token: code, secret });
+  // CRYPTO-1: Use module-level totp instance with window:0 (30s window only)
+  const isValid = totp.verify({ token: code, secret });
 
   if (!isValid) return false;
 
@@ -151,18 +166,20 @@ async function _validateTOTP(userId, code, encryptedSecret) {
  * @returns {{ user: object, isNew: boolean }}
  */
 async function register(data) {
-  // SECURITY: Check for existing email but return same response shape
-  // to prevent account enumeration attacks.
+  // SECURITY: Check for existing email
   const existingUser = await User.findOne({ email: data.email });
+
+  // HTTP-3: ALWAYS run bcrypt regardless of whether email exists.
+  // Without this, response time for existing email is fast (early return),
+  // response time for new email is slow (bcrypt). Timing difference = account enumeration.
+  const passwordHash = await bcrypt.hash(data.password, config.bcrypt.saltRounds);
+
   if (existingUser) {
     logger.warn('Registration attempt for existing email', {
-      email: data.email,
       ip: getRequestContext().ip,
     });
     return { user: null, isNew: false };
   }
-
-  const passwordHash = await bcrypt.hash(data.password, config.bcrypt.saltRounds);
 
   const user = await User.create({
     email: data.email,
@@ -284,7 +301,29 @@ async function login(data, ip, userAgent) {
   user.lastLoginIp = crypto.createHash('sha256').update(ip || '').digest('hex').slice(0, 16);
   await user.save();
 
-  const accessToken = _generateAccessToken(user);
+  // S-4: Anomaly detection — log if new login is from a different IP family
+  const existingTokens = await RefreshToken.find(
+    { userId: user._id, isRevoked: false, expiresAt: { $gt: new Date() } },
+    'ip',
+  ).lean();
+
+  if (existingTokens.length > 0) {
+    const isNewIp = existingTokens.every((t) => t.ip !== ip);
+    if (isNewIp) {
+      logger.warn('AUTH ANOMALY: New login from previously unseen IP — possible account compromise', {
+        userId: user._id,
+        newIp: ip ? crypto.createHash('sha256').update(ip).digest('hex').slice(0, 8) : 'unknown',
+        activeSessions: existingTokens.length,
+      });
+      await _audit(AUDIT_ACTIONS.AUTH_LOGIN_SUCCESS, {
+        actor: user._id.toString(),
+        resourceId: user._id.toString(),
+        metadata: { anomaly: 'new_ip_login', activeSessions: existingTokens.length },
+      });
+    }
+  }
+
+  const accessToken = _generateAccessToken(user, ip);
   const refreshTokenValue = _generateRefreshTokenValue();
   const refreshTokenHash = _hashRefreshToken(refreshTokenValue);
   const tokenFamily = randomHex(16);
@@ -436,6 +475,25 @@ async function refreshTokens(refreshTokenValue, ip, userAgent) {
     throw AppError.unauthorized('Account is disabled', ErrorCodes.AUTH_ACCOUNT_DISABLED);
   }
 
+  // S-3: Detect suspicious token use from a different IP or User-Agent
+  // We don't BLOCK (would break legitimate use: mobile NAT, ISP changes),
+  // but we log it loudly and audit for security monitoring.
+  const ipChanged = storedToken.ip && ip && storedToken.ip !== ip;
+  const uaChanged = storedToken.userAgent && userAgent && storedToken.userAgent !== userAgent;
+  if (ipChanged || uaChanged) {
+    logger.warn('S-3: Refresh token used from different context — possible session hijack', {
+      userId: user._id,
+      ipChanged,
+      uaChanged,
+      newIpHash: ip ? crypto.createHash('sha256').update(ip).digest('hex').slice(0, 8) : null,
+    });
+    await _audit(AUDIT_ACTIONS.AUTH_LOGIN_FAILED, {
+      actor: user._id.toString(),
+      resourceId: user._id.toString(),
+      metadata: { reason: 'context_change_on_refresh', ipChanged, uaChanged },
+    });
+  }
+
   // A1: ATOMIC token rotation — old revoke + new create in one transaction
   const newRefreshValue = _generateRefreshTokenValue();
   const newTokenHash = _hashRefreshToken(newRefreshValue);
@@ -462,7 +520,7 @@ async function refreshTokens(refreshTokenValue, ip, userAgent) {
     await session.endSession();
   }
 
-  const newAccessToken = _generateAccessToken(user);
+  const newAccessToken = _generateAccessToken(user, ip);
   return { accessToken: newAccessToken, refreshToken: newRefreshValue };
 }
 
@@ -570,8 +628,8 @@ async function setup2FA(userId) {
   // A7: Generate secret but do NOT store in DB yet.
   // Secret is only persisted after successful verify2FA().
   // Return it for the client to scan the QR code.
-  const secret = authenticator.generateSecret();
-  const otpAuthUrl = authenticator.keyuri(user.email, 'XCoinGateway', secret);
+  const secret = generateSecret();
+  const otpAuthUrl = totp.keyuri(user.email, 'XCoinGateway', secret);
 
   // Store as pending (encrypted) in a temp field — cleared if never verified
   // In production: use Redis with TTL instead. For MVP: store as pending secret.

@@ -34,6 +34,7 @@ const { randomUUID } = require('@xcg/crypto');
 const { createLogger } = require('@xcg/logger');
 const { AppError, HttpStatus, response, requestContextMiddleware } = require('@xcg/common');
 const { config } = require('./config');
+const { validateOrigin } = require('./middleware/originValidation');
 
 // H2: Attempt to use Redis store for rate limiting (survives restarts, works across instances)
 // Falls back to in-memory store if Redis is unavailable (safe for single-instance dev)
@@ -70,18 +71,40 @@ app.use(helmet({
     directives: {
       defaultSrc: ["'self'"],
       scriptSrc: ["'self'"],
-      styleSrc: ["'self'", "'unsafe-inline'"],
+      // UI-1: Remove 'unsafe-inline' — it allows CSS-based data exfiltration attacks
+      // Use a nonce-based approach instead when inline styles are needed
+      styleSrc: ["'self'"],
       imgSrc: ["'self'", 'data:'],
       connectSrc: ["'self'"],
       fontSrc: ["'self'"],
       objectSrc: ["'none'"],
       frameAncestors: ["'none'"],
+      upgradeInsecureRequests: config.env === 'production' ? [] : null,
     },
   },
   hsts: { maxAge: 31536000, includeSubDomains: true, preload: true },
   referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
   crossOriginEmbedderPolicy: false,
+  // UI-2: Permissions-Policy — disable dangerous browser APIs not needed for a payment API
+  permissionsPolicy: {
+    features: {
+      geolocation: [],
+      camera: [],
+      microphone: [],
+      payment: [],      // Disable browser Payment API to force use of our own flow
+      usb: [],
+      accelerometer: [],
+      gyroscope: [],
+      magnetometer: [],
+    },
+  },
 }));
+
+// UI-3: Expect-CT — enforce Certificate Transparency (detect rogue TLS certs)
+app.use((req, res, next) => {
+  res.setHeader('Expect-CT', `enforce, max-age=86400`);
+  next();
+});
 
 // ═══════════════════════════════════════════════════════════════
 // 2. CORS
@@ -144,6 +167,28 @@ const healthLimiter = rateLimit({
 // ═══════════════════════════════════════════════════════════════
 // 4. BODY PARSER (strict size limits)
 // ═══════════════════════════════════════════════════════════════
+// HTTP-2: Force HTTPS in production (for users before HSTS is cached)
+if (config.env === 'production') {
+  app.use((req, res, next) => {
+    if (req.protocol === 'http') {
+      return res.redirect(301, `https://${req.headers.host}${req.url}`);
+    }
+    next();
+  });
+}
+
+// HTTP-1: Reject HTTP Request Smuggling attempts
+// Requests with BOTH Content-Length and Transfer-Encoding are ambiguous
+// and exploited for request smuggling attacks
+app.use((req, res, next) => {
+  if (req.headers['transfer-encoding'] && req.headers['content-length']) {
+    return res.status(400).json(
+      response.error('BAD_REQUEST', 'Ambiguous request: cannot have both Content-Length and Transfer-Encoding'),
+    );
+  }
+  next();
+});
+
 // Auth routes: 10KB (login/register payloads are tiny)
 // All other API routes: 100KB
 app.use('/api/v1/auth', express.json({ limit: '10kb' }));
@@ -168,9 +213,16 @@ app.use('/api/', (req, res, next) => {
 });
 
 // ═══════════════════════════════════════════════════════════════
-// 6. NOSQL INJECTION PREVENTION (MUST be AFTER body parser)
+// 6. NOSQL + PROTOTYPE INJECTION PREVENTION (MUST be AFTER body parser)
 // ═══════════════════════════════════════════════════════════════
 app.use(noSqlSanitize);
+
+// ═══════════════════════════════════════════════════════════════
+// 6b. CSRF-2: ORIGIN VALIDATION (MUST be AFTER body parser)
+// ═══════════════════════════════════════════════════════════════
+// Server-side Origin check — independent of CORS.
+// Prevents CSRF on state-mutation endpoints.
+app.use(validateOrigin);
 
 // ═══════════════════════════════════════════════════════════════
 // 7. HTTP PARAMETER POLLUTION PREVENTION
@@ -275,7 +327,12 @@ app.use((err, req, res, _next) => {
       message: err.message,
       statusCode: err.statusCode,
     });
-    return res.status(err.statusCode).json(err.toJSON());
+    // ID-2: Return generic code externally; detailed code in logs only
+    const safeJson = err.toJSON();
+    if (config.env === 'production' && safeJson.code && safeJson.code.includes('AUTH_')) {
+      safeJson.code = 'AUTH_ERROR'; // Don't expose auth state machine to attackers
+    }
+    return res.status(err.statusCode).json(safeJson);
   }
 
   // Unexpected errors (bugs, system failures)

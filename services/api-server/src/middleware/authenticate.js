@@ -36,10 +36,15 @@ async function authenticate(req, res, next) {
       throw AppError.unauthorized('Access token required', ErrorCodes.AUTH_TOKEN_MISSING);
     }
 
-    // 2. Verify token (algorithm pinned to HS256 — prevents algorithm confusion attacks)
+    // 2. Verify token
+    // T-3: Pin to HS256 ONLY. Explicitly rejects 'none', RS256, and any other algorithm.
+    // Even with a secret provided, explicit pinning is required as defence-in-depth
+    // against JWT library bugs or future algorithm downgrade attacks.
     let decoded;
     try {
-      decoded = jwt.verify(token, config.jwt.accessSecret, { algorithms: ['HS256'] });
+      decoded = jwt.verify(token, config.jwt.accessSecret, {
+        algorithms: ['HS256'], // ONLY HS256 accepted
+      });
     } catch (err) {
       if (err.name === 'TokenExpiredError') {
         throw AppError.unauthorized('Access token expired', ErrorCodes.AUTH_TOKEN_EXPIRED);
@@ -88,6 +93,20 @@ async function authenticate(req, res, next) {
       userId: user._id.toString(),
       role: user.role,
     });
+
+    // T-1: Warn on IP prefix mismatch — possible stolen token from different network.
+    // Non-blocking: don't reject (CGNAT, VPN, mobile users have dynamic IPs).
+    if (decoded.iph) {
+      const crypto = require('crypto');
+      const currentPrefix = req.ip ? req.ip.split('.').slice(0, 3).join('.') : '';
+      const currentHash = crypto.createHash('sha256').update(currentPrefix).digest('hex').slice(0, 8);
+      if (decoded.iph !== currentHash) {
+        logger.warn('T-1: JWT IP prefix mismatch — possible stolen token', {
+          requestId: req.requestId,
+          userId: user._id.toString(),
+        });
+      }
+    }
 
     next();
   } catch (err) {

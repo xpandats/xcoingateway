@@ -17,9 +17,9 @@ const invoiceSchema = new mongoose.Schema({
   idempotencyKey: { type: String, sparse: true, unique: true }, // Prevents duplicate creation
 
   // Amount
-  baseAmount: { type: Number, required: true }, // Original amount requested (e.g., 150.00)
-  uniqueAmount: { type: Number, required: true, index: true }, // With offset (e.g., 150.000347)
-  amountOffset: { type: Number, required: true }, // The unique offset applied
+  baseAmount: { type: Number, required: true, min: 0.01 },     // BL-4: no negative/zero
+  uniqueAmount: { type: Number, required: true, index: true, min: 0.01 }, // BL-4
+  amountOffset: { type: Number, required: true },
   currency: { type: String, default: 'USDT' },
   network: { type: String, default: 'tron' },
 
@@ -60,8 +60,10 @@ const invoiceSchema = new mongoose.Schema({
   strict: true, // L4: explicit — reject unknown fields at DB write level
 });
 
-// Compound indexes for matching engine
-invoiceSchema.index({ uniqueAmount: 1, walletAddress: 1, status: 1 });
+// BL-3: Compound unique index — prevents two invoices on the same wallet
+// getting identical uniqueAmount, which would cause the matching engine to
+// match the wrong invoice (race condition in unique amount generation).
+invoiceSchema.index({ uniqueAmount: 1, walletAddress: 1 }, { unique: true });
 invoiceSchema.index({ status: 1, expiresAt: 1 }); // For expiry scanning
 invoiceSchema.index({ merchantId: 1, createdAt: -1 }); // For merchant dashboard
 

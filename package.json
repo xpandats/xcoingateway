@@ -18,7 +18,12 @@
     "dev:fraud": "npm run dev --workspace=services/fraud-engine",
     "lint": "eslint . --ext .js,.jsx",
     "test": "jest --passWithNoTests",
-    "audit:security": "npm audit --audit-level=high"
+    "audit:security": "npm audit --audit-level=high",
+    "audit:critical": "npm audit --audit-level=critical",
+    "ci:install": "npm ci",
+    "start:prod": "pm2 start ecosystem.config.js --env production",
+    "stop:prod": "pm2 stop xcg-api-server",
+    "reload:prod": "pm2 reload xcg-api-server --update-env"
   },
   "engines": {
     "node": ">=20.0.0"

@@ -14,14 +14,23 @@ const { ErrorCodes } = require('./errors/codes');
 
 const fields = {
   email: Joi.string().email().trim().lowercase().max(255),
-  password: Joi.string().min(8).max(72)  // bcrypt silently truncates at 72 bytes — enforce at validation layer
-    .regex(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*()_+\-=[\]{};':\"\\|,.<>\/?])/)
+  // INJ-3: Split lookahead regex into 4 SEPARATE tests (prevents ReDoS catastrophic backtracking)
+  // Single regex with nested lookaheads on long strings = O(n^2) in worst case = event loop block
+  password: Joi.string().min(8).max(72)  // bcrypt silently truncates at 72 bytes
+    .custom((value, helpers) => {
+      if (!/[a-z]/.test(value)) return helpers.error('any.invalid');
+      if (!/[A-Z]/.test(value)) return helpers.error('any.invalid');
+      if (!/\d/.test(value)) return helpers.error('any.invalid');
+      if (!/[!@#$%^&*()_+\-=[\]{};':\"\\|,.<>\/?]/.test(value)) return helpers.error('any.invalid');
+      return value;
+    })
     .message('Password must contain at least 1 uppercase, 1 lowercase, 1 digit, and 1 special character'),
   name: Joi.string().trim().min(1).max(100),
   businessName: Joi.string().trim().min(1).max(200),
   tronAddress: Joi.string().regex(/^T[a-zA-Z1-9]{33}$/).message('Invalid TRC20 address'),
   mongoId: Joi.string().regex(/^[a-f\d]{24}$/i).message('Invalid ID format'),
-  amount: Joi.number().positive().precision(6).max(1000000),
+  // BL-4: Minimum 0.01 to prevent negative/zero invoice amounts (financial models require positive values)
+  amount: Joi.number().min(0.01).precision(6).max(1000000),
   url: Joi.string().uri({ scheme: ['https'] }).max(500),
   apiKey: Joi.string().length(64),
   totpCode: Joi.string().length(6).regex(/^\d+$/).message('TOTP must be 6 digits'),

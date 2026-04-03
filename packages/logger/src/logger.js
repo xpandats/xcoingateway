@@ -18,6 +18,22 @@
 const LOG_LEVELS = { error: 0, warn: 1, info: 2, debug: 3 };
 
 /**
+ * INJ-1: Strip log injection characters from strings.
+ * Newlines in log entries allow attackers to forge fake log lines.
+ * This must be applied to ALL user-controlled strings before logging.
+ *
+ * Blocked: \n \r \u2028 (line separator) \u2029 (paragraph separator)
+ *
+ * @param {string} str
+ * @returns {string} clean string
+ */
+function _stripLogInjection(str) {
+  return typeof str === 'string'
+    ? str.replace(/[\n\r\u2028\u2029]/g, ' ').trim()
+    : str;
+}
+
+/**
  * Fields that must NEVER appear in logs.
  * If these keys are found in log data, they are redacted.
  */
@@ -121,11 +137,15 @@ function createLogger(serviceName) {
       timestamp: new Date().toISOString(),
       level,
       service: serviceName,
-      message,
+      // INJ-1: Strip log injection from message
+      message: _stripLogInjection(String(message)),
       ...sanitize(data),
     };
 
-    const output = JSON.stringify(entry);
+    // INJ-1: Recursively strip log injection from string values in the entry
+    const output = JSON.stringify(entry, (_key, value) =>
+      typeof value === 'string' ? _stripLogInjection(value) : value,
+    );
 
     if (level === 'error') {
       process.stderr.write(output + '\n');

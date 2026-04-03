@@ -20,7 +20,14 @@
 const { createLogger } = require('@xcg/logger');
 const logger = createLogger('security');
 
-const BANNED_KEYS = /^\$/; // Any key starting with $ is a MongoDB operator
+// Any key starting with $ is a MongoDB operator
+const DOLLAR_KEY = /^\$/;
+
+// INJ-2: Prototype pollution keys — equally dangerous as NoSQL injection
+// {"__proto__":{"isAdmin":true}} poisons the entire Object prototype chain
+const PROTOTYPE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
+const BANNED_KEY = (key) => DOLLAR_KEY.test(key) || PROTOTYPE_KEYS.has(key);
 
 /**
  * Recursively sanitize an object by removing MongoDB operators.
@@ -44,7 +51,7 @@ function sanitize(obj, context = '') {
   let found = false;
   const result = {};
   for (const key of Object.keys(obj)) {
-    if (BANNED_KEYS.test(key)) {
+    if (BANNED_KEY(key)) {
       found = true;
       // Skip this key entirely (don't copy it)
       continue;

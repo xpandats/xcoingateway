@@ -31,6 +31,17 @@ async function startServer() {
     validateMasterKey();
     logger.info('Master encryption key validated');
 
+    // SC-3: Delete secrets from process.env after loading into module closures.
+    // config.js and keyManager.js have already read and stored these in memory.
+    // Removing from process.env prevents malicious npm packages from reading
+    // credentials via process.env at any point after startup.
+    const _secretKeys = [
+      'MASTER_ENCRYPTION_KEY', 'JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET',
+      'HMAC_SECRET', 'WEBHOOK_SECRET', 'COOKIE_SECRET',
+    ];
+    _secretKeys.forEach((k) => { delete process.env[k]; });
+    logger.info('Secrets removed from process.env (SC-3)');
+
     // 3. Connect to MongoDB
     logger.info('Connecting to MongoDB...');
     await connectDB(config.db.uri);

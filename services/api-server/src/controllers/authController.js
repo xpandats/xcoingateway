@@ -30,7 +30,9 @@ const authService = require('../services/authService');
 function _setRefreshCookie(res, token) {
   res.cookie('refreshToken', token, {
     httpOnly: true,
-    secure: config.env === 'production',
+    // CSRF-3: Always secure — even in dev use HTTPS via mkcert/reverse proxy
+    // HTTP is never acceptable for sensitive auth cookies
+    secure: true,
     sameSite: 'strict',
     path: '/api/v1/auth/refresh',
     maxAge: 7 * 24 * 60 * 60 * 1000,
@@ -38,12 +40,12 @@ function _setRefreshCookie(res, token) {
 }
 
 function _clearRefreshCookie(res) {
-  res.clearCookie('refreshToken', {
-    httpOnly: true,
-    secure: config.env === 'production',
-    sameSite: 'strict',
-    path: '/api/v1/auth/refresh',
-  });
+  const cookieOpts = { httpOnly: true, secure: true, sameSite: 'strict' };
+  // S-2: Clear with BOTH paths — belt-and-suspenders.
+  // If cookie was ever set with a different path (bug, migration), it won't
+  // be cleared by a single path-specific clearCookie call.
+  res.clearCookie('refreshToken', { ...cookieOpts, path: '/api/v1/auth/refresh' });
+  res.clearCookie('refreshToken', { ...cookieOpts, path: '/' });
 }
 
 // ═══════════════════════════════════════════════════════════════

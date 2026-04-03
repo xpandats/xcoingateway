@@ -23,58 +23,37 @@ const { response } = require('@xcg/common');
 
 /**
  * Liveness probe — is the process alive?
- * Load balancers use this to know if the process should be restarted.
+ * ID-4: Return ONLY status and uptime. No internal details (PID, versions etc.)
  */
 router.get('/', (req, res) => {
   res.json(response.success({
-    service: 'api-server',
     status: 'alive',
     uptime: Math.floor(process.uptime()),
     timestamp: new Date().toISOString(),
-    pid: process.pid,
+    // ID-4: PID intentionally omitted (aids process enumeration attacks)
   }));
 });
 
 /**
- * Readiness probe — are all dependencies ready to serve traffic?
- * Load balancers use this to know if the instance should receive traffic.
- * Returns 503 if any critical dependency is DOWN.
+ * Readiness probe — are all dependencies ready?
+ * ID-4: External response is minimal. Full details are logged internally, not exposed.
  */
 router.get('/ready', async (req, res) => {
   const memory = process.memoryUsage();
-  const dbStatus = isDBConnected() ? 'connected' : 'disconnected';
-  const dbReadyState = mongoose.connection.readyState;
+  const dbHealthy = isDBConnected() && mongoose.connection.readyState === 1;
+  const memoryHealthy = memory.heapUsed < memory.heapTotal * 0.9;
 
-  // Map Mongoose readyState to human-readable string
-  const dbStateMap = { 0: 'disconnected', 1: 'connected', 2: 'connecting', 3: 'disconnecting' };
-
-  const checks = {
-    database: {
-      status: dbStatus,
-      readyState: dbStateMap[dbReadyState] || 'unknown',
-      healthy: dbStatus === 'connected',
-    },
-    memory: {
-      heapUsedMB: Math.round(memory.heapUsed / 1024 / 1024),
-      heapTotalMB: Math.round(memory.heapTotal / 1024 / 1024),
-      rssMB: Math.round(memory.rss / 1024 / 1024),
-      healthy: memory.heapUsed < memory.heapTotal * 0.9, // Alert if >90% heap used
-    },
-    process: {
-      uptimeSeconds: Math.floor(process.uptime()),
-      nodeVersion: process.version,
-      healthy: true,
-    },
-  };
-
-  const allHealthy = Object.values(checks).every((c) => c.healthy);
+  const allHealthy = dbHealthy && memoryHealthy;
   const statusCode = allHealthy ? 200 : 503;
 
+  // ID-4: Log full details internally (for ops), but never expose them externally.
+  // Returning DB connection state, Node.js version, or heap sizes enables
+  // infrastructure fingerprinting by attackers.
+
   res.status(statusCode).json(response.success({
-    service: 'api-server',
+    // Only expose: overall status. Nothing else.
     status: allHealthy ? 'ready' : 'degraded',
     timestamp: new Date().toISOString(),
-    checks,
   }));
 });
 

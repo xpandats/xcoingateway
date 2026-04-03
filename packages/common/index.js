@@ -21,6 +21,8 @@ const {
   updateRequestContext,
 } = require('./src/requestContext');
 const { validateObjectId, toObjectId, buildSort, isValidObjectId } = require('./src/utils');
+const money = require('./src/money');
+const { safeFilePath } = require('./src/safeFilePath');
 
 module.exports = {
   AppError,
@@ -43,4 +45,8 @@ module.exports = {
   // RBAC helpers
   isSuperAdmin,
   canModifyUser,
+  // BL-5: Safe financial arithmetic (always use instead of +/-/* on money)
+  money,
+  // INJ-4: Path traversal prevention
+  safeFilePath,
 };
