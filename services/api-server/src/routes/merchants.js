@@ -1,26 +1,41 @@
 'use strict';
 
-const router       = require('express').Router();
-const asyncHandler = require('../utils/asyncHandler');
-const { authenticate }    = require('../middleware/authenticate');
-const { authorize }       = require('../middleware/authorize');
-const { adminIpWhitelist }= require('../middleware/adminIpWhitelist');
+/**
+ * @module routes/merchants — HARDENED
+ *
+ * Admin merchant management routes.
+ * Full 4-layer security: JWT + role + 2FA + IP whitelist.
+ */
+
+const router = require('express').Router();
+const asyncHandler             = require('../utils/asyncHandler');
+const { authenticate }         = require('../middleware/authenticate');
+const { authorize }            = require('../middleware/authorize');
+const { require2FA }           = require('../middleware/require2FA');
+const { adminIpWhitelist }     = require('../middleware/adminIpWhitelist');
+const { confirmCriticalAction }= require('../middleware/confirmCriticalAction');
 const {
   createMerchant, listMerchants, getMerchant,
   updateMerchant, setMerchantStatus,
   createApiKey, revokeApiKey, rotateWebhookSecret,
 } = require('../controllers/merchantController');
 
-// All routes: admin authentication + IP whitelist
-router.use(authenticate, authorize('admin'), adminIpWhitelist());
+// Full admin security stack on every merchant admin route
+const adminAuth = [authenticate, authorize('admin'), require2FA, adminIpWhitelist()];
 
-router.post('/',                                 asyncHandler(createMerchant));
-router.get('/',                                  asyncHandler(listMerchants));
-router.get('/:id',                               asyncHandler(getMerchant));
-router.put('/:id',                               asyncHandler(updateMerchant));
-router.put('/:id/status',                        asyncHandler(setMerchantStatus));
-router.post('/:id/api-keys',                     asyncHandler(createApiKey));
-router.delete('/:id/api-keys/:keyId',            asyncHandler(revokeApiKey));
-router.post('/:id/webhook-secret-rotate',        asyncHandler(rotateWebhookSecret));
+router.post('/',                          adminAuth, asyncHandler(createMerchant));
+router.get('/',                           adminAuth, asyncHandler(listMerchants));
+router.get('/:id',                        adminAuth, asyncHandler(getMerchant));
+router.put('/:id',                        adminAuth, asyncHandler(updateMerchant));
+
+// Status change = critical action (deactivating a merchant stops all payments)
+router.put('/:id/status',                 adminAuth, confirmCriticalAction, asyncHandler(setMerchantStatus));
+
+// API key operations
+router.post('/:id/api-keys',              adminAuth, asyncHandler(createApiKey));
+router.delete('/:id/api-keys/:keyId',     adminAuth, confirmCriticalAction, asyncHandler(revokeApiKey));
+
+// Webhook secret rotation
+router.post('/:id/webhook-secret-rotate', adminAuth, asyncHandler(rotateWebhookSecret));
 
 module.exports = router;

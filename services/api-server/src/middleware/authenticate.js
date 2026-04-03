@@ -18,6 +18,9 @@ const jwt = require('jsonwebtoken');
 const { User } = require('@xcg/database');
 const { AppError, ErrorCodes, updateRequestContext } = require('@xcg/common');
 const { config } = require('../config');
+const { createLogger } = require('@xcg/logger');
+
+const logger = createLogger('authenticate');
 
 /**
  * Authentication middleware.

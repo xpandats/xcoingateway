@@ -1,7 +1,8 @@
 'use strict';
 
-const router          = require('express').Router();
-const merchantApiAuth = require('../middleware/merchantApiAuth');
+const router              = require('express').Router();
+const merchantApiAuth     = require('../middleware/merchantApiAuth');
+const { merchantReadLimiter, merchantWriteLimiter } = require('../middleware/merchantRateLimit');
 const {
   createInvoice, getInvoice, listInvoices, getPaymentStatus,
 } = require('../controllers/invoiceController');
@@ -9,10 +10,13 @@ const {
 module.exports = function (redisClient) {
   const auth = merchantApiAuth(redisClient);
 
-  router.post('/',            auth, createInvoice);
-  router.get('/',             auth, listInvoices);
-  router.get('/:id',          auth, getInvoice);
-  router.get('/:id/status',   auth, getPaymentStatus);   // Polling endpoint
+  // Write: create invoice — write rate limit applied AFTER auth (merchantId known)
+  router.post('/',            auth, merchantWriteLimiter, createInvoice);
+
+  // Reads: list / get / status — read rate limit
+  router.get('/',             auth, merchantReadLimiter,  listInvoices);
+  router.get('/:id/status',   auth, merchantReadLimiter,  getPaymentStatus);  // Before /:id
+  router.get('/:id',          auth, merchantReadLimiter,  getInvoice);
 
   return router;
 };
