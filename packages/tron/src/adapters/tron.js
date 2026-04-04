@@ -288,6 +288,54 @@ class TronAdapter extends BlockchainAdapter {
   getUSDTContractAddress() {
     return this.usdtContract;
   }
+
+  /**
+   * Get wallet energy balance from TronGrid.
+   * Energy is required for TRC20 transfers — without it, TRX is burned as fee.
+   *
+   * @param {string} address - Tron wallet address
+   * @returns {Promise<{ energy: number, energyLimit: number, bandwidth: number }>}
+   */
+  async getEnergyBalance(address) {
+    try {
+      const url = `${this.baseUrl}/v1/accounts/${address}`;
+      const resp = await axios.get(url, {
+        headers:    this._buildHeaders(),
+        timeout:    REQUEST_TIMEOUT_MS,
+        validateStatus: (s) => s === 200,
+      });
+
+      const data = resp.data?.data?.[0];
+      if (!data) return { energy: 0, energyLimit: 0, bandwidth: 0 };
+
+      // TronGrid returns energy in account resource
+      const energy      = data.account_resource?.energy_usage_total || 0;
+      const energyLimit = data.account_resource?.EnergyLimit || 0;
+      const bandwidth   = data.free_net_usage || 0;
+      const remainingEnergy = Math.max(0, energyLimit - energy);
+
+      return { energy: remainingEnergy, energyLimit, bandwidth };
+    } catch (err) {
+      this.logger.warn('TronAdapter: failed to get energy balance', {
+        address, error: err.message,
+      });
+      // Fail safe: return 0 — caller will queue withdrawal pending energy check
+      return { energy: 0, energyLimit: 0, bandwidth: 0 };
+    }
+  }
+
+  /**
+   * Check if wallet has enough energy for a USDT TRC20 transfer.
+   * USDT TRC20 requires ~65,000 energy per transfer.
+   *
+   * @param {string} address - Tron wallet address
+   * @returns {Promise<boolean>}
+   */
+  async hasSufficientEnergy(address) {
+    const ENERGY_PER_TRC20_TRANSFER = 65_000; // From TRON constants
+    const { energy } = await this.getEnergyBalance(address);
+    return energy >= ENERGY_PER_TRC20_TRANSFER;
+  }
 }
 
 module.exports = TronAdapter;

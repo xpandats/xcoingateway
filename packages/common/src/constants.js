@@ -13,15 +13,17 @@ const ROLES = Object.freeze({
 });
 
 const INVOICE_STATUS = Object.freeze({
-  INITIATED: 'initiated',
-  PENDING: 'pending',          // Waiting for payment
-  HASH_FOUND: 'hash_found',   // TX detected on blockchain
-  CONFIRMING: 'confirming',    // Waiting for confirmations
-  CONFIRMED: 'confirmed',     // Enough confirmations
-  SUCCESS: 'success',          // Fully complete
-  EXPIRED: 'expired',         // Time window passed, no payment
-  FAILED: 'failed',           // Payment found but invalid
-  CANCELLED: 'cancelled',     // Merchant cancelled before payment
+  INITIATED:  'initiated',
+  PENDING:    'pending',           // Waiting for payment
+  HASH_FOUND: 'hash_found',        // TX detected on chain
+  CONFIRMING: 'confirming',        // Waiting for block confirmations
+  CONFIRMED:  'confirmed',         // Enough confirmations
+  SUCCESS:    'success',           // Fully settled
+  EXPIRED:    'expired',           // Time window passed
+  FAILED:     'failed',            // Payment found but invalid
+  CANCELLED:  'cancelled',         // Merchant cancelled
+  UNDERPAID:  'underpaid',         // Received < expected — manual review
+  OVERPAID:   'overpaid',          // Received > expected — flagged, matched at invoice amount
 });
 
 const TX_STATUS = Object.freeze({

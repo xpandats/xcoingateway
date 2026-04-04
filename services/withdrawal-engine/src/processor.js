@@ -29,9 +29,10 @@ class WithdrawalProcessor {
    * @param {string} opts.tronNetwork       - 'mainnet' | 'testnet'
    * @param {object} opts.logger
    */
-  constructor({ signingPublisher, alertPublisher, config, tronNetwork, logger }) {
+  constructor({ signingPublisher, alertPublisher, tronAdapter, config, tronNetwork, logger }) {
     this.signingPublisher = signingPublisher;
     this.alertPublisher   = alertPublisher;
+    this.tronAdapter      = tronAdapter;   // For energy checks
     this.config           = config;
     this.tronNetwork      = tronNetwork;
     this.logger           = logger;
@@ -41,8 +42,9 @@ class WithdrawalProcessor {
    * Process a withdrawal eligible event from the Matching Engine.
    * @param {object} data           - { merchantId, invoiceId, amount }
    * @param {string} idempotencyKey - Queue idempotency key
+   * @param {object} [publisherSelf] - Self-publisher for re-queuing on cooling-off
    */
-  async handle(data, idempotencyKey) {
+  async handle(data, idempotencyKey, publisherSelf = null) {
     const { merchantId, invoiceId, amount } = data;
     const amountFloat = parseFloat(amount);
 
@@ -110,15 +112,26 @@ class WithdrawalProcessor {
     // ── 6. High-value flag ───────────────────────────────────────────────────
     const requiresApproval = amountFloat > this.config.highValueThreshold;
 
-    // ── 7. Cooling-off check ─────────────────────────────────────────────────
+    // ── 7. Cooling-off check — RE-QUEUE with delay instead of silent drop ──────
     const cooldownMs = this.config.withdrawalCooldownMs; // 1 hour
     const lastDeposit = await this._getLastDepositTime(merchantId);
     if (lastDeposit && (Date.now() - lastDeposit.getTime()) < cooldownMs) {
       const remainingMs = cooldownMs - (Date.now() - lastDeposit.getTime());
-      this.logger.info('WithdrawalProcessor: cooling-off period active', {
-        merchantId, remainingMinutes: Math.ceil(remainingMs / 60000),
+      const remainingMin = Math.ceil(remainingMs / 60000);
+      this.logger.info('WithdrawalProcessor: cooling-off period active — re-queuing with delay', {
+        merchantId, remainingMinutes: remainingMin,
       });
-      // Don't fail — defer (webhook will be sent when cooling-off expires)
+
+      // Re-queue with BullMQ delay — will be retried after cooling-off expires
+      if (publisherSelf) {
+        await publisherSelf.publish(
+          data,
+          `${idempotencyKey}:retry:${Date.now()}`,
+          { delay: remainingMs + 5000 }, // 5s buffer after cooldown
+        );
+      } else {
+        this.logger.warn('WithdrawalProcessor: no self-publisher — cooling-off deferred but not re-queued', { merchantId });
+      }
       return;
     }
 
@@ -200,7 +213,7 @@ class WithdrawalProcessor {
       await session.endSession();
     }
 
-    // ── 10. Skip signing if requires admin approval ──────────────────────────
+    // ── 10. Skip signing if requires admin approval ───────────────────────────
     if (requiresApproval) {
       await this._alert('withdrawal_requires_approval', {
         withdrawalId: withdrawal.withdrawalId,
@@ -210,7 +223,28 @@ class WithdrawalProcessor {
       return;
     }
 
-    // ── 11. Submit to Signing Service via queue ──────────────────────────────
+    // ── 11. Energy check BEFORE submitting to signing service ─────────────────
+    // Per spec: if insufficient energy → queue withdrawal, alert admin
+    if (this.tronAdapter) {
+      const hasSufficientEnergy = await this.tronAdapter.hasSufficientEnergy(wallet.address);
+      if (!hasSufficientEnergy) {
+        this.logger.warn('WithdrawalProcessor: insufficient Tron energy — deferring withdrawal', {
+          walletAddress: wallet.address,
+          withdrawalId:  withdrawal.withdrawalId,
+        });
+        await this._alert('insufficient_energy', {
+          withdrawalId:  withdrawal.withdrawalId,
+          walletAddress: wallet.address,
+          merchantId,    amount: amountFloat,
+          message: `Withdrawal deferred: wallet ${wallet.address} has insufficient Tron energy. Please stake TRX or use energy rental.`,
+        });
+        // Update withdrawal status to 'queued' — admin must resolve energy then re-trigger
+        await Withdrawal.findByIdAndUpdate(withdrawal._id, { $set: { status: 'queued', reviewNotes: 'Deferred: insufficient Tron energy' } });
+        return;
+      }
+    }
+
+    // ── 12. Submit to Signing Service via queue ──────────────────────────────
     const requestId = uuidv4();
     await this.signingPublisher.publish(
       {

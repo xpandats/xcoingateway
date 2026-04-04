@@ -8,12 +8,15 @@
 const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, '../../../.env.local') });
 
-const { config, validateConfig }          = require('../../api-server/src/config');
-const { connectDB }                        = require('@xcg/database');
-const { createLogger }                     = require('@xcg/logger');
+const { config, validateConfig }               = require('../../api-server/src/config');
+const { connectDB }                             = require('@xcg/database');
+const { createLogger }                          = require('@xcg/logger');
 const { createConsumer, createPublisher, QUEUES } = require('@xcg/queue');
-const IORedis                              = require('ioredis');
-const WithdrawalProcessor                  = require('./processor');
+const { startHealthServer }                     = require('@xcg/common/src/healthServer');
+const IORedis                                   = require('ioredis');
+const mongoose                                  = require('mongoose');
+const TronAdapter                               = require('@xcg/tron').TronAdapter;
+const WithdrawalProcessor                       = require('./processor');
 
 const logger = createLogger('withdrawal-engine');
 
@@ -30,17 +33,29 @@ async function main() {
   const redis = new IORedis(config.redis.url, { maxRetriesPerRequest: null });
   redis.on('error', (err) => logger.error('WithdrawalEngine: Redis error', { error: err.message }));
 
+  // Health check server (internal only — port 3094)
+  startHealthServer({ port: 3094, service: 'withdrawal-engine', mongoose, redis, logger });
+
   const redisOpts = {
     host: new URL(config.redis.url).hostname,
     port: Number(new URL(config.redis.url).port) || 6379,
   };
 
-  const signingPublisher = createPublisher(QUEUES.SIGNING_REQUEST, redisOpts, config.queue.signingSecret, logger);
-  const alertPublisher   = createPublisher(QUEUES.SYSTEM_ALERT,    redisOpts, config.queue.signingSecret, logger);
+  const signingPublisher  = createPublisher(QUEUES.SIGNING_REQUEST,      redisOpts, config.queue.signingSecret, logger);
+  const alertPublisher    = createPublisher(QUEUES.SYSTEM_ALERT,          redisOpts, config.queue.signingSecret, logger);
+  // Self-publisher: allows processor to re-queue cooling-off withdrawals with BullMQ delay
+  const selfPublisher     = createPublisher(QUEUES.WITHDRAWAL_ELIGIBLE,   redisOpts, config.queue.signingSecret, logger);
+
+  // Tron adapter for energy checks
+  const tronAdapter = new TronAdapter({
+    network: config.tron.network,
+    apiKey:  config.tron.apiKey,
+  }, logger);
 
   const processor = new WithdrawalProcessor({
     signingPublisher,
     alertPublisher,
+    tronAdapter,
     config:      config.wallet,
     tronNetwork: config.tron.network,
     logger,
@@ -54,7 +69,7 @@ async function main() {
     redisOpts,
     config.queue.signingSecret,
     logger,
-    (data, idempotencyKey) => processor.handle(data, idempotencyKey),
+    (data, idempotencyKey) => processor.handle(data, idempotencyKey, selfPublisher), // Pass self-publisher
     { concurrency: 2 }, // Low concurrency — withdrawal is a critical path
   );
 

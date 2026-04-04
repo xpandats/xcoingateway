@@ -203,47 +203,126 @@ class MatchingEngine {
   }
 
   async _handleNoMatch(txData) {
-    const expired = await Invoice.findOne({
-      uniqueAmount:  parseFloat(txData.amount),
+    const amount = parseFloat(txData.amount);
+
+    // 1. Duplicate payment check — invoice already matched for this amount+wallet
+    const alreadyMatched = await Invoice.findOne({
       walletAddress: txData.toAddress,
-      status:        INVOICE_STATUS.EXPIRED,   // ← constant
+      status:        { $in: [INVOICE_STATUS.CONFIRMED, INVOICE_STATUS.SUCCESS] },
+      // Check if this tx amount is close to a recently-confirmed invoice
+      uniqueAmount:  { $gte: amount - 0.01, $lte: amount + 0.01 },
     }).lean();
 
-    if (expired) {
-      this.logger.warn('MatchingEngine: LATE PAYMENT on expired invoice', {
-        txHash: txData.txHash, invoiceId: String(expired._id),
+    if (alreadyMatched) {
+      this.logger.warn('MatchingEngine: DUPLICATE PAYMENT — already matched invoice', {
+        txHash: txData.txHash, invoiceId: String(alreadyMatched._id), amount,
       });
-      await this._recordFailed(txData, 'late_payment', expired._id);
+      await this._recordFailed(txData, 'duplicate_payment', alreadyMatched._id, true);
+      await this._fireAlert('duplicate_payment', {
+        txHash: txData.txHash, invoiceId: String(alreadyMatched._id), amount: txData.amount,
+        message: `Duplicate payment detected — ${amount} USDT for already-matched invoice. Manual refund review required.`,
+      });
+      return;
+    }
+
+    // 2. Late payment — invoice existed but expired
+    const lateMatch = await Invoice.findOne({
+      uniqueAmount:  amount,
+      walletAddress: txData.toAddress,
+      status:        INVOICE_STATUS.EXPIRED,
+    }).lean();
+
+    if (lateMatch) {
+      this.logger.warn('MatchingEngine: LATE PAYMENT on expired invoice', {
+        txHash: txData.txHash, invoiceId: String(lateMatch._id),
+      });
+      await this._recordFailed(txData, 'late_payment', lateMatch._id, true);
       await this._fireAlert('late_payment', {
-        txHash: txData.txHash, invoiceId: String(expired._id),
-        amount: txData.amount,
+        txHash: txData.txHash, invoiceId: String(lateMatch._id), amount: txData.amount,
         message: 'Late payment on expired invoice — manual refund review required',
       });
       return;
     }
 
+    // 3. Underpayment — find invoice for this wallet where received < uniqueAmount
+    // Look for an active invoice where the received amount is less than expected (within 50%)
+    const underpaidInvoice = await Invoice.findOne({
+      walletAddress: txData.toAddress,
+      status:        { $in: [INVOICE_STATUS.PENDING, INVOICE_STATUS.HASH_FOUND] },
+      expiresAt:     { $gt: new Date() },
+      uniqueAmount:  { $gt: amount, $lte: amount * 1.5 }, // Received is less than expected
+    }).lean();
+
+    if (underpaidInvoice) {
+      this.logger.warn('MatchingEngine: UNDERPAYMENT detected', {
+        txHash: txData.txHash, invoiceId: String(underpaidInvoice._id),
+        expected: underpaidInvoice.uniqueAmount, received: amount,
+      });
+      await Invoice.findByIdAndUpdate(underpaidInvoice._id, {
+        $set: { status: INVOICE_STATUS.UNDERPAID },
+      });
+      await this._recordFailed(txData, 'underpayment', underpaidInvoice._id, true);
+      await this._fireAlert('underpayment', {
+        txHash: txData.txHash, invoiceId: String(underpaidInvoice._id),
+        amount: txData.amount, expected: String(underpaidInvoice.uniqueAmount),
+        message: `Underpayment: received ${amount} USDT, expected ${underpaidInvoice.uniqueAmount} USDT. Manual review required.`,
+      });
+      return;
+    }
+
+    // 4. Overpayment — find invoice where received > uniqueAmount (within 10 USDT)
+    const overpaidInvoice = await Invoice.findOne({
+      walletAddress: txData.toAddress,
+      status:        { $in: [INVOICE_STATUS.PENDING, INVOICE_STATUS.HASH_FOUND] },
+      expiresAt:     { $gt: new Date() },
+      uniqueAmount:  { $gte: amount * 0.9, $lt: amount }, // Received is more than expected
+    }).lean();
+
+    if (overpaidInvoice) {
+      this.logger.warn('MatchingEngine: OVERPAYMENT — matching at invoice amount, flagging excess', {
+        txHash: txData.txHash, invoiceId: String(overpaidInvoice._id),
+        expected: overpaidInvoice.uniqueAmount, received: amount,
+      });
+      // Still confirm the payment for the invoice amount, but flag overpayment
+      const modifiedTxData = { ...txData, amount: String(overpaidInvoice.uniqueAmount), overpaid: true, actualAmount: txData.amount };
+      await this._confirmPayment(modifiedTxData, overpaidInvoice);
+      await this._fireAlert('overpayment', {
+        txHash: txData.txHash, invoiceId: String(overpaidInvoice._id),
+        amount: txData.amount, invoiceAmount: String(overpaidInvoice.uniqueAmount),
+        message: `Overpayment: received ${amount} USDT, invoice was ${overpaidInvoice.uniqueAmount} USDT. Excess refund review required.`,
+      });
+      return;
+    }
+
+    // 5. No match at all
     this.logger.warn('MatchingEngine: no matching invoice', {
       txHash: txData.txHash, amount: txData.amount, toAddress: txData.toAddress,
     });
     await this._recordFailed(txData, 'no_invoice_match');
   }
 
-  async _recordFailed(txData, reason, invoiceId = null) {
+  async _recordFailed(txData, reason, invoiceId = null, flagForReview = false) {
     try {
       await Transaction.findOneAndUpdate(
         { txHash: txData.txHash },
         {
           $setOnInsert: {
-            txHash: txData.txHash, network: txData.network || 'tron',
-            blockNumber: txData.blockNum || txData.blockNumber || 0,
-            blockTimestamp: new Date(), fromAddress: txData.fromAddress,
-            toAddress: txData.toAddress, amount: parseFloat(txData.amount),
-            tokenContract: txData.tokenContract, tokenSymbol: txData.tokenSymbol || 'USDT',
-            status: 'failed', matchResult: reason, matchedInvoiceId: invoiceId,
-            confirmations: txData.confirmations,
-            requiredConfirmations: this.minConfirmations,
-            detectedAt: new Date(),
-            flaggedForReview: reason === 'late_payment',
+            txHash:               txData.txHash,
+            network:              txData.network || 'tron',
+            blockNumber:          txData.blockNum || txData.blockNumber || 0,
+            blockTimestamp:       new Date(),
+            fromAddress:          txData.fromAddress,
+            toAddress:            txData.toAddress,
+            amount:               parseFloat(txData.amount),
+            tokenContract:        txData.tokenContract,
+            tokenSymbol:          txData.tokenSymbol || 'USDT',
+            status:               'failed',
+            matchResult:          reason,
+            matchedInvoiceId:     invoiceId,
+            confirmations:        txData.confirmations,
+            requiredConfirmations:this.minConfirmations,
+            detectedAt:           new Date(),
+            flaggedForReview:     flagForReview,
           },
         },
         { upsert: true, new: true },

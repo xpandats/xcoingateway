@@ -17,6 +17,10 @@ const { config }     = require('../config');
 
 const logger = require('@xcg/logger').createLogger('invoice-ctrl');
 
+// Queue publisher for payment.created event (lazy-init — wired up by app.js)
+let _paymentCreatedPublisher = null;
+function setPaymentCreatedPublisher(publisher) { _paymentCreatedPublisher = publisher; }
+
 // Lazy-init singletons
 let _walletService, _invoiceService;
 
@@ -56,6 +60,26 @@ async function createInvoice(req, res) {
 
   const invoice = await getServices().createInvoice(data, req.merchant);
 
+  // Fire payment.created webhook event (non-blocking — don't fail invoice creation)
+  if (_paymentCreatedPublisher && invoice.callbackUrl) {
+    _paymentCreatedPublisher.publish(
+      {
+        event:      'payment.created',
+        invoiceId:  invoice._id || invoice.invoiceId,
+        merchantId: String(req.merchant._id),
+        amount:     String(invoice.baseAmount),
+        uniqueAmount: String(invoice.uniqueAmount),
+        currency:   invoice.currency,
+        network:    invoice.network,
+        walletAddress: invoice.walletAddress,
+        expiresAt:  invoice.expiresAt,
+        callbackUrl:invoice.callbackUrl,
+        createdAt:  new Date().toISOString(),
+      },
+      `payment.created:${invoice.invoiceId || invoice._id}`,
+    ).catch((err) => logger.warn('invoiceController: failed to publish payment.created', { error: err.message }));
+  }
+
   res.status(201).json({
     success: true,
     data:    { invoice },
@@ -80,15 +104,17 @@ async function getPaymentStatus(req, res) {
 
   // Map to partner-friendly status
   const statusMap = {
-    [INVOICE_STATUS.INITIATED]: 'created',
-    [INVOICE_STATUS.PENDING]:   'awaiting_payment',
-    [INVOICE_STATUS.HASH_FOUND]:'processing',
-    [INVOICE_STATUS.CONFIRMING]:'confirming',
-    [INVOICE_STATUS.CONFIRMED]: 'confirmed',
-    [INVOICE_STATUS.SUCCESS]:   'completed',
-    [INVOICE_STATUS.EXPIRED]:   'expired',
-    [INVOICE_STATUS.FAILED]:    'failed',
-    [INVOICE_STATUS.CANCELLED]: 'cancelled',
+    [INVOICE_STATUS.INITIATED]:  'created',
+    [INVOICE_STATUS.PENDING]:    'awaiting_payment',
+    [INVOICE_STATUS.HASH_FOUND]: 'processing',
+    [INVOICE_STATUS.CONFIRMING]: 'confirming',
+    [INVOICE_STATUS.CONFIRMED]:  'confirmed',
+    [INVOICE_STATUS.SUCCESS]:    'completed',
+    [INVOICE_STATUS.EXPIRED]:    'expired',
+    [INVOICE_STATUS.FAILED]:     'failed',
+    [INVOICE_STATUS.CANCELLED]:  'cancelled',
+    [INVOICE_STATUS.UNDERPAID]:  'underpaid',
+    [INVOICE_STATUS.OVERPAID]:   'overpaid',
   };
 
   res.json({
@@ -115,4 +141,5 @@ module.exports = {
   getInvoice:       asyncHandler(getInvoice),
   listInvoices:     asyncHandler(listInvoices),
   getPaymentStatus: asyncHandler(getPaymentStatus),
+  setPaymentCreatedPublisher,
 };

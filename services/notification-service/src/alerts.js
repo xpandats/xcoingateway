@@ -35,9 +35,14 @@ const ALERT_EMOJI = {
   daily_cap_reached:            '🟠',
   withdrawal_to_own_wallet:     '🚨',
   withdrawal_over_per_tx_limit: '🟠',
+  insufficient_energy:          '⚡',
+  underpayment:                 '🟡',
+  overpayment:                  '🟡',
+  duplicate_payment:            '🚨',
   system_error:                 '❌',
   default:                      'ℹ️',
 };
+
 
 class AlertService {
   /**
