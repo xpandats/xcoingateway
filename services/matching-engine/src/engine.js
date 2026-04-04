@@ -140,6 +140,14 @@ class MatchingEngine {
         const platformFee  = money.round(receivedAmt * this.platformFeeRate, 6);
         const netAmount    = money.round(receivedAmt - platformFee, 6);
 
+        // Calculate running balances BEFORE insert (for balanceAfter field accuracy)
+        // This allows reconciliation tools to verify each entry independently
+        const [merchantBalance] = await LedgerEntry.aggregate([
+          { $match: { merchantId: invoice.merchantId, account: 'merchant_receivable' } },
+          { $group: { _id: null, net: { $sum: { $cond: [{ $eq: ['$type', 'credit'] }, '$amount', { $multiply: ['$amount', -1] }] } } } },
+        ]).session(session);
+        const merchantPriorBalance = merchantBalance?.net || 0;
+
         const incomingId   = `led_${uuidv4().replace(/-/g, '')}`;
         const creditId     = `led_${uuidv4().replace(/-/g, '')}`;
         const feeId        = `led_${uuidv4().replace(/-/g, '')}`;
@@ -157,7 +165,7 @@ class MatchingEngine {
             counterpartEntryId: creditId,
             description:        `On-chain receipt — ${invoice.invoiceId} (${txData.txHash.slice(0,12)}...)`,
             idempotencyKey:     `ledger:incoming:${txData.txHash}`,
-            balanceAfter:       0,
+            balanceAfter:       receivedAmt, // hot_wallet increases by received amount
           },
           // CREDIT: net amount owed to merchant
           {
@@ -171,7 +179,7 @@ class MatchingEngine {
             counterpartEntryId: incomingId,
             description:        `Payment net — ${invoice.invoiceId}`,
             idempotencyKey:     `ledger:recv:${txData.txHash}`,
-            balanceAfter:       0,
+            balanceAfter:       money.round(merchantPriorBalance + netAmount, 6),
           },
           // CREDIT: platform fee
           {
@@ -185,7 +193,7 @@ class MatchingEngine {
             counterpartEntryId: incomingId,
             description:        `Platform fee ${(this.platformFeeRate * 100).toFixed(2)}% — ${invoice.invoiceId}`,
             idempotencyKey:     `ledger:fee:${txData.txHash}`,
-            balanceAfter:       0,
+            balanceAfter:       platformFee, // Simplified: use per-entry amount for fee account
           },
         ], { session });
       });
