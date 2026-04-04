@@ -15,10 +15,10 @@ const ROLES = Object.freeze({
 const INVOICE_STATUS = Object.freeze({
   INITIATED:  'initiated',
   PENDING:    'pending',           // Waiting for payment
-  HASH_FOUND: 'hash_found',        // TX detected on chain
-  CONFIRMING: 'confirming',        // Waiting for block confirmations
-  CONFIRMED:  'confirmed',         // Enough confirmations
-  SUCCESS:    'success',           // Fully settled
+  HASH_FOUND: 'hash_found',        // TX detected on chain, awaiting confirmations
+  CONFIRMING: 'confirming',        // Confirmation tracker is monitoring this TX
+  CONFIRMED:  'confirmed',         // 19+ confirmations — payment finalized
+  SUCCESS:    'success',           // Fully settled + withdrawn
   EXPIRED:    'expired',           // Time window passed
   FAILED:     'failed',            // Payment found but invalid
   CANCELLED:  'cancelled',         // Merchant cancelled

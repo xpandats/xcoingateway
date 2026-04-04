@@ -3,7 +3,12 @@
 /**
  * @module matching-engine/server
  * Entry point for the Matching Engine service.
- * Runs both the matching engine consumer AND the invoice expiry scanner.
+ * Runs the matching engine consumer, confirmation tracker, and invoice expiry scanner.
+ *
+ * PHASE 2 COMPLETE FLOW:
+ *   1. MatchingEngine:         consumes TRANSACTION_DETECTED → sets HASH_FOUND + creates DETECTED Tx
+ *   2. ConfirmationTracker:    polls DETECTED Txs every 10s → calls _confirmPayment() at 19 confirms
+ *   3. InvoiceExpiryScanner:   fires payment.expired for PENDING invoices past expiresAt
  */
 
 const path = require('path');
@@ -14,9 +19,11 @@ const { connectDB }                           = require('@xcg/database');
 const { createLogger }                        = require('@xcg/logger');
 const { createConsumer, createPublisher, QUEUES } = require('@xcg/queue');
 const { startHealthServer }                   = require('@xcg/common/src/healthServer');
+const { TronAdapter }                         = require('@xcg/tron');
 const IORedis                                 = require('ioredis');
 const mongoose                                = require('mongoose');
 const MatchingEngine                          = require('./engine');
+const ConfirmationTracker                     = require('./confirmationTracker');
 const InvoiceExpiryScanner                    = require('./invoiceExpiry');
 
 const logger = createLogger('matching-engine');
@@ -49,7 +56,13 @@ async function main() {
   // PAYMENT_FAILED queue used by expiry scanner for payment.expired events
   const paymentFailedPublisher = createPublisher(QUEUES.PAYMENT_FAILED,  redisOpts, config.queue.signingSecret, logger);
 
-  // Matching Engine
+  // TronAdapter — used by ConfirmationTracker to query latest block height
+  const tronAdapter = new TronAdapter(
+    { network: config.tron.network, apiKey: config.tron.apiKey },
+    logger,
+  );
+
+  // Matching Engine (Phase 1: detection + validation)
   const engine = new MatchingEngine({
     minConfirmations:   config.tron.confirmationsRequired,
     platformFeeRate:    config.invoice.platformFeeRate,
@@ -59,13 +72,22 @@ async function main() {
     logger,
   });
 
-  // Invoice Expiry Scanner — P0 fix: runs alongside the engine
+  // Confirmation Tracker (Phase 2: polls DETECTED txs until 19 confirmations)
+  const tracker = new ConfirmationTracker({
+    adapter:          tronAdapter,
+    engine,
+    alertPublisher,
+    minConfirmations: config.tron.confirmationsRequired,
+    logger,
+  });
+
+  // Invoice Expiry Scanner — fires payment.expired webhooks
   const expiryScanner = new InvoiceExpiryScanner({
     expiredPublisher: paymentFailedPublisher,
     logger,
   });
 
-  // Consumer: main transaction matching
+  // Consumer: main transaction matching (Phase 1)
   const { worker } = createConsumer(
     QUEUES.TRANSACTION_DETECTED,
     redisOpts,
@@ -75,11 +97,13 @@ async function main() {
     { concurrency: 5 },
   );
 
-  // Start the expiry scanner background job
-  expiryScanner.start();
+  // Start background jobs
+  await tracker.start();   // Runs stuck-tx recovery immediately + starts 10s poll loop
+  expiryScanner.start();   // Runs expired invoice sweep every 60s
 
   async function shutdown(signal) {
     logger.info(`MatchingEngine: ${signal} — shutting down`);
+    tracker.stop();
     expiryScanner.stop();
     await worker.close();
     await redis.quit();
@@ -90,7 +114,7 @@ async function main() {
   process.on('uncaughtException',  (err) => { logger.error('MatchingEngine: uncaught', { error: err.message }); process.exit(1); });
   process.on('unhandledRejection', (r)   => { logger.error('MatchingEngine: unhandled rejection', { reason: String(r) }); process.exit(1); });
 
-  logger.info('MatchingEngine: running — waiting for transactions');
+  logger.info('MatchingEngine: fully running — Phase 1 (detection) + Phase 2 (confirmation) + Expiry Scanner');
 }
 
 main().catch((err) => { console.error('MatchingEngine: fatal startup error', err.message); process.exit(1); });

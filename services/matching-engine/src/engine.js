@@ -4,14 +4,22 @@
  * @module matching-engine/engine
  *
  * Matching Engine — Heart of XCoinGateway.
- * Uses INVOICE_STATUS constants throughout — not string literals.
+ *
+ * TWO-PHASE CONFIRMATION FLOW:
+ *   Phase 1 (this file): On tx detection → validate → set invoice to HASH_FOUND
+ *                         → create Transaction record with status DETECTED
+ *   Phase 2 (confirmationTracker.js): Poll DETECTED txs → once 19 confirmations
+ *                         reached → call _confirmPayment() → CONFIRMED → ledger
+ *
+ * This separates detection (instant) from confirmation (delayed by block time)
+ * so no payment is ever dropped due to insufficient confirmations at publish time.
  */
 
 const mongoose   = require('mongoose');
 const { v4: uuidv4 } = require('uuid');
 const { Invoice, Transaction, LedgerEntry } = require('@xcg/database');
 const { money }  = require('@xcg/common');
-const { INVOICE_STATUS } = require('@xcg/common').constants;
+const { INVOICE_STATUS, TX_STATUS } = require('@xcg/common').constants;
 
 // ─── HARDCODED CONSTANTS — NEVER from config/env ─────────────────────────────
 const USDT_CONTRACTS = new Set([
@@ -32,15 +40,18 @@ class MatchingEngine {
   async handle(txData, idempotencyKey) {
     const { txHash } = txData;
 
-    // Idempotency guard
+    // Idempotency guard — check if already detected or confirmed
     const existingTx = await Transaction.findOne({ txHash }).select('status').lean();
     if (existingTx) {
-      this.logger.debug('MatchingEngine: idempotency — already processed', { txHash });
+      this.logger.debug('MatchingEngine: idempotency — already recorded', {
+        txHash, status: existingTx.status,
+      });
       return;
     }
 
-    this.logger.info('MatchingEngine: processing', {
-      txHash, amount: txData.amount, toAddress: txData.toAddress, confirmations: txData.confirmations,
+    this.logger.info('MatchingEngine: new transaction received', {
+      txHash, amount: txData.amount, toAddress: txData.toAddress,
+      confirmations: txData.confirmations,
     });
 
     // 1. Contract whitelist
@@ -57,15 +68,7 @@ class MatchingEngine {
       return;
     }
 
-    // 3. Confirmation depth — ZERO TOLERANCE
-    if (txData.confirmations < this.minConfirmations) {
-      this.logger.info('MatchingEngine: awaiting confirmations', {
-        txHash, have: txData.confirmations, need: this.minConfirmations,
-      });
-      return;
-    }
-
-    // 4. Find matching invoice using constants
+    // 3. Find matching invoice — checks BEFORE recording anything
     const invoice = await Invoice.findOne({
       uniqueAmount:  parseFloat(txData.amount),
       walletAddress: txData.toAddress,
@@ -79,39 +82,77 @@ class MatchingEngine {
       return;
     }
 
-    await this._confirmPayment(txData, invoice);
+    // 4. PHASE 1: Detection — set HASH_FOUND + create DETECTING Transaction record.
+    //    The ConfirmationTracker will poll this transaction and call _confirmPayment()
+    //    once minConfirmations (19) is reached.
+    await this._detectPayment(txData, invoice);
   }
 
-  async _confirmPayment(txData, invoice) {
+  /**
+   * Phase 1: Mark invoice as HASH_FOUND and record transaction as DETECTED.
+   * ConfirmationTracker will call _confirmPayment() after 19 confirmations.
+   *
+   * If the tx already has enough confirmations when first seen (rare but possible
+   * if listener was behind), skip Phase 1 and go directly to Phase 2.
+   */
+  async _detectPayment(txData, invoice) {
+    // Fast path: if already confirmed (listener was delayed), confirm directly
+    if (txData.confirmations >= this.minConfirmations) {
+      this.logger.info('MatchingEngine: tx already fully confirmed — skipping to confirmation', {
+        txHash: txData.txHash, confirmations: txData.confirmations,
+      });
+      // Pre-create the Transaction record so _confirmPayment doesn't double-insert
+      await Transaction.create([{
+        txHash:               txData.txHash,
+        network:              txData.network || 'tron',
+        blockNumber:          txData.blockNum || txData.blockNumber || 0,
+        blockTimestamp:       txData.timestamp ? new Date(txData.timestamp * 1000) : new Date(),
+        fromAddress:          txData.fromAddress,
+        toAddress:            txData.toAddress,
+        amount:               parseFloat(txData.amount),
+        tokenContract:        txData.tokenContract,
+        tokenSymbol:          'USDT',
+        status:               TX_STATUS.MATCHED, // Will be overwritten by _confirmPayment -> CONFIRMED
+        confirmations:        txData.confirmations,
+        requiredConfirmations:this.minConfirmations,
+        detectedAt:           txData.detectedAt ? new Date(txData.detectedAt) : new Date(),
+      }]).catch((err) => {
+        if (!err.message.includes('duplicate key')) throw err;
+      });
+      await this._confirmPayment(txData, invoice);
+      return;
+    }
+
+    // Normal path: not enough confirmations yet
+    // Set invoice to HASH_FOUND and record transaction as DETECTED (for tracker)
     const session = await mongoose.startSession();
     try {
       await session.withTransaction(async () => {
-        // Atomic: update invoice only if still in matching state
+        // Atomic: update invoice only if still PENDING (race condition guard)
         const updated = await Invoice.findOneAndUpdate(
           {
             _id:    invoice._id,
-            status: { $in: [INVOICE_STATUS.PENDING, INVOICE_STATUS.HASH_FOUND] },
+            status: INVOICE_STATUS.PENDING,
             txHash: null,
           },
           {
             $set: {
-              status:      INVOICE_STATUS.CONFIRMED,    // ← constant
-              txHash:      txData.txHash,
-              confirmedAt: new Date(),
-              paidAt:      new Date(),
+              status: INVOICE_STATUS.HASH_FOUND,
+              txHash: txData.txHash,
+              paidAt: new Date(),
             },
           },
           { new: true, session },
         );
 
         if (!updated) {
-          this.logger.warn('MatchingEngine: race condition — invoice already matched', {
+          this.logger.warn('MatchingEngine: race — invoice already has hash_found or matched', {
             invoiceId: String(invoice._id), txHash: txData.txHash,
           });
           return;
         }
 
-        // Record transaction
+        // Create Transaction record with DETECTED status — tracker will monitor it
         await Transaction.create([{
           txHash:               txData.txHash,
           network:              txData.network || 'tron',
@@ -122,14 +163,99 @@ class MatchingEngine {
           amount:               parseFloat(txData.amount),
           tokenContract:        txData.tokenContract,
           tokenSymbol:          'USDT',
-          status:               'confirmed',
-          matchedInvoiceId:     invoice._id,
-          matchedAt:            new Date(),
+          status:               TX_STATUS.DETECTED,    // ← Tracker monitors this
           confirmations:        txData.confirmations,
           requiredConfirmations:this.minConfirmations,
-          confirmedAt:          new Date(),
           detectedAt:           txData.detectedAt ? new Date(txData.detectedAt) : new Date(),
         }], { session });
+      });
+
+      this.logger.info('MatchingEngine: HASH_FOUND — awaiting confirmations', {
+        invoiceId: invoice.invoiceId, txHash: txData.txHash,
+        have: txData.confirmations, need: this.minConfirmations,
+      });
+
+      // Emit payment.detected webhook event
+      await this.confirmedPublisher.publish({
+        event:      'payment.detected',
+        invoiceId:  String(invoice._id),
+        merchantId: String(invoice.merchantId),
+        txHash:     txData.txHash,
+        amount:     String(txData.amount),
+        callbackUrl:invoice.callbackUrl || '',
+        detectedAt: new Date().toISOString(),
+      }, `detected:${txData.txHash}`);
+
+    } catch (err) {
+      this.logger.error('MatchingEngine: _detectPayment failed', {
+        invoiceId: String(invoice._id), txHash: txData.txHash, error: err.message,
+      });
+      throw err;
+    } finally {
+      await session.endSession();
+    }
+  }
+
+  async _confirmPayment(txData, invoice) {
+    const session = await mongoose.startSession();
+    try {
+      await session.withTransaction(async () => {
+        // Atomic: update invoice
+        // HASH_FOUND invoices already have txHash set (from Phase 1 _detectPayment)
+        // PENDING invoices are the fast-path (tx arrived already confirmed)
+        const updated = await Invoice.findOneAndUpdate(
+          {
+            _id:    invoice._id,
+            status: { $in: [INVOICE_STATUS.PENDING, INVOICE_STATUS.HASH_FOUND, INVOICE_STATUS.CONFIRMING] },
+          },
+          {
+            $set: {
+              status:      INVOICE_STATUS.CONFIRMED,
+              txHash:      txData.txHash,
+              confirmedAt: new Date(),
+              paidAt:      new Date(),
+            },
+          },
+          { new: true, session },
+        );
+
+        if (!updated) {
+          this.logger.warn('MatchingEngine: race condition — invoice already confirmed or beyond', {
+            invoiceId: String(invoice._id), txHash: txData.txHash,
+          });
+          return;
+        }
+
+        // UPDATE existing Transaction record (created in Phase 1 as DETECTED)
+        // to CONFIRMED status. Upsert handles the fast-path where no Phase 1 record exists.
+        await Transaction.findOneAndUpdate(
+          { txHash: txData.txHash },
+          {
+            $set: {
+              status:           TX_STATUS.CONFIRMED,
+              matchedInvoiceId: invoice._id,
+              matchedAt:        new Date(),
+              confirmations:    txData.confirmations,
+              confirmedAt:      new Date(),
+              processedAt:      new Date(),
+            },
+            $setOnInsert: {
+              // Only set on new document (fast-path: tx arrived pre-confirmed)
+              txHash:               txData.txHash,
+              network:              txData.network || 'tron',
+              blockNumber:          txData.blockNum || txData.blockNumber || 0,
+              blockTimestamp:       txData.timestamp ? new Date(txData.timestamp * 1000) : new Date(),
+              fromAddress:          txData.fromAddress,
+              toAddress:            txData.toAddress,
+              amount:               parseFloat(txData.amount),
+              tokenContract:        txData.tokenContract,
+              tokenSymbol:          'USDT',
+              requiredConfirmations:this.minConfirmations,
+              detectedAt:           txData.detectedAt ? new Date(txData.detectedAt) : new Date(),
+            },
+          },
+          { upsert: true, session },
+        );
 
         // TRUE DOUBLE-ENTRY LEDGER (3 atomic entries):
         //   1. hot_wallet_incoming:  DEBIT  full received amount (money arrived on-chain)
