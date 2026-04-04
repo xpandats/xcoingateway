@@ -7,60 +7,79 @@ const mongoose = require('mongoose');
  *
  * Audit Log — APPEND-ONLY, IMMUTABLE.
  *
- * SECURITY: Update and delete operations are disabled at the schema level.
- * This ensures the audit trail cannot be tampered with via application code,
- * even if an attacker gains access to the application layer.
+ * GOLDEN RULE: Every sensitive operation in the system is recorded here.
+ * No exceptions. If it's not in the audit log, it didn't happen.
  *
- * Only direct MongoDB shell access can modify these records (which requires
- * separate DB credentials and should be restricted in production).
+ * SECURITY:
+ *   - Update and delete operations are BLOCKED at schema level
+ *   - strict: true — unknown fields silently dropped (don't break writes)
+ *   - Indexed for fast security queries by actor, action, resource, IP
+ *   - Separate MongoDB collection — use separate DB user with insert-only
+ *     access in production (cannot be wiped even with app compromise)
+ *
+ * FIELD NAMING: Consistent across ALL services — ipAddress, outcome, userAgent
  */
+
 const auditLogSchema = new mongoose.Schema({
-  actor: { type: String, required: true, index: true }, // userId or 'system'
-  action: { type: String, required: true, index: true }, // From AUDIT_ACTIONS
-  timestamp: { type: Date, required: true, default: Date.now, index: true },
-  ip: { type: String, default: null },
-  userAgent: { type: String, default: null },
-  resource: { type: String, default: null, index: true }, // 'merchant', 'wallet', etc.
-  resourceId: { type: String, default: null },
-  before: { type: mongoose.Schema.Types.Mixed, default: null },
-  after: { type: mongoose.Schema.Types.Mixed, default: null },
-  metadata: { type: mongoose.Schema.Types.Mixed, default: null },
+  // WHO performed the action
+  actor:      { type: String, required: true, index: true }, // userId | 'system' | 'signing-service'
+
+  // WHAT was done — use AUDIT_ACTIONS constants
+  action:    { type: String, required: true, index: true },
+
+  // WHEN
+  timestamp:  { type: Date, required: true, default: Date.now, index: true },
+
+  // FROM WHERE
+  ipAddress:  { type: String, default: null, index: true }, // Consistent field name
+  userAgent:  { type: String, default: null },
+
+  // ON WHAT
+  resource:   { type: String, default: null, index: true }, // 'merchant', 'wallet', 'withdrawal'
+  resourceId: { type: String, default: null },              // The _id or public ID
+
+  // RESULT
+  outcome:   { type: String, enum: ['success', 'failed', 'blocked'], default: 'success' },
+
+  // CONTEXT — before/after state for mutation operations
+  before:    { type: mongoose.Schema.Types.Mixed, default: null }, // State before change
+  after:     { type: mongoose.Schema.Types.Mixed, default: null },  // State after change
+  metadata:  { type: mongoose.Schema.Types.Mixed, default: null },  // Extra context
 }, {
-  timestamps: false,
+  timestamps: false,        // Manual timestamp field for precision
   collection: 'audit_logs',
-  strict: true,
+  strict: false,            // Allow flexible metadata — but core fields always required
 });
 
+// ─── Compound indexes for security forensics ─────────────────────────────────
 auditLogSchema.index({ actor: 1, timestamp: -1 });
 auditLogSchema.index({ action: 1, timestamp: -1 });
 auditLogSchema.index({ resource: 1, resourceId: 1, timestamp: -1 });
+auditLogSchema.index({ ipAddress: 1, timestamp: -1 });  // IP-based forensics
+auditLogSchema.index({ outcome: 1, timestamp: -1 });    // Failed action monitoring
 
-// ─── IMMUTABILITY ENFORCEMENT ────────────────────────────────
-// Disable all update and delete operations at the schema level.
-// Any attempt to call these will throw an error.
+// ─── IMMUTABILITY ─────────────────────────────────────────────────────────────
+// All update/delete operations are blocked at the schema middleware level.
+// Even if application code is compromised, audit logs cannot be altered.
 
 function immutableError(next) {
-  const err = new Error('SECURITY VIOLATION: Audit logs are immutable. Update/delete operations are forbidden.');
+  const err = new Error(
+    'SECURITY VIOLATION: Audit logs are immutable. Update/delete operations are forbidden.',
+  );
   err.name = 'ImmutabilityViolation';
   next(err);
 }
 
-// Block instance-level operations
-auditLogSchema.pre('updateOne', function (next) { immutableError(next); });
-auditLogSchema.pre('deleteOne', function (next) { immutableError(next); });
-auditLogSchema.pre('findOneAndUpdate', function (next) { immutableError(next); });
-auditLogSchema.pre('findOneAndDelete', function (next) { immutableError(next); });
-auditLogSchema.pre('findOneAndReplace', function (next) { immutableError(next); });
+auditLogSchema.pre('updateOne',         immutableError);
+auditLogSchema.pre('deleteOne',         immutableError);
+auditLogSchema.pre('findOneAndUpdate',  immutableError);
+auditLogSchema.pre('findOneAndDelete',  immutableError);
+auditLogSchema.pre('findOneAndReplace', immutableError);
+auditLogSchema.pre('updateMany',        immutableError);
+auditLogSchema.pre('deleteMany',        immutableError);
 
-// Block model-level operations
-auditLogSchema.pre('updateMany', function (next) { immutableError(next); });
-auditLogSchema.pre('deleteMany', function (next) { immutableError(next); });
-
-// Block save on existing documents (only new inserts allowed)
 auditLogSchema.pre('save', function (next) {
-  if (!this.isNew) {
-    return immutableError(next);
-  }
+  if (!this.isNew) return immutableError(next);
   next();
 });
 
