@@ -329,14 +329,91 @@ async function resumeWithdrawals(req, res) {
   res.json({ success: true, message: 'Withdrawals resumed.' });
 }
 
+// ─── Transaction & Invoice Detail ─────────────────────────────────────────────
+
+async function getTransactionDetail(req, res) {
+  const tx = await Transaction.findById(req.params.id)
+    .populate('matchedInvoiceId', 'invoiceId baseAmount uniqueAmount status merchantId')
+    .lean();
+
+  if (!tx) throw AppError.notFound('Transaction not found', 'TX_NOT_FOUND');
+
+  res.json({ success: true, data: { transaction: tx } });
+}
+
+async function listAllInvoices(req, res) {
+  const { page = 1, limit = 20, status, merchantId } = req.query;
+  const filter = {};
+  if (status)     filter.status     = status;
+  if (merchantId) filter.merchantId = merchantId;
+
+  const [invoices, total] = await Promise.all([
+    Invoice.find(filter)
+      .sort({ createdAt: -1 })
+      .skip((Number(page) - 1) * Number(limit))
+      .limit(Number(limit))
+      .lean(),
+    Invoice.countDocuments(filter),
+  ]);
+
+  res.json({
+    success: true,
+    data: { invoices, pagination: { page: Number(page), limit: Number(limit), total, pages: Math.ceil(total / Number(limit)) } },
+  });
+}
+
+async function getInvoiceDetail(req, res) {
+  const invoice = await Invoice.findOne({ invoiceId: req.params.id })
+    .populate('merchantId', 'businessName email')
+    .lean();
+
+  if (!invoice) throw AppError.notFound('Invoice not found', 'INVOICE_NOT_FOUND');
+
+  res.json({ success: true, data: { invoice } });
+}
+
+const CANCELLABLE_BY_ADMIN = new Set(['initiated', 'pending', 'hash_found']);
+
+async function adminCancelInvoice(req, res) {
+  const invoice = await Invoice.findOne({ invoiceId: req.params.id });
+  if (!invoice) throw AppError.notFound('Invoice not found', 'INVOICE_NOT_FOUND');
+
+  if (invoice.status === 'cancelled') {
+    throw AppError.conflict('Invoice already cancelled', 'INVOICE_ALREADY_CANCELLED');
+  }
+  if (!CANCELLABLE_BY_ADMIN.has(invoice.status)) {
+    throw AppError.conflict(`Cannot cancel invoice in '${invoice.status}' status`, 'INVOICE_CANNOT_CANCEL');
+  }
+
+  invoice.status = 'cancelled';
+  await invoice.save();
+
+  await AuditLog.create({
+    actor:      String(req.user._id),
+    action:     'invoice.admin_cancelled',
+    resource:   'invoice',
+    resourceId: String(invoice._id),
+    ipAddress:  req.ip,
+    outcome:    'success',
+    timestamp:  new Date(),
+    metadata:   { invoiceId: invoice.invoiceId, reason: req.body?.reason || 'Admin action' },
+  });
+
+  res.json({ success: true, data: { invoiceId: invoice.invoiceId, status: invoice.status } });
+}
+
 // ─── Exports ─────────────────────────────────────────────────────────────────
 
 module.exports = {
-  getDashboard:          asyncHandler(getDashboard),
-  listTransactions:      asyncHandler(listTransactions),
-  listPendingWithdrawals:asyncHandler(listPendingWithdrawals),
-  approveWithdrawal:     asyncHandler(approveWithdrawal),
-  getAuditLog:           asyncHandler(getAuditLog),
-  pauseWithdrawals:      asyncHandler(pauseWithdrawals),
-  resumeWithdrawals:     asyncHandler(resumeWithdrawals),
+  getDashboard:           asyncHandler(getDashboard),
+  listTransactions:       asyncHandler(listTransactions),
+  listPendingWithdrawals: asyncHandler(listPendingWithdrawals),
+  approveWithdrawal:      asyncHandler(approveWithdrawal),
+  getAuditLog:            asyncHandler(getAuditLog),
+  pauseWithdrawals:       asyncHandler(pauseWithdrawals),
+  resumeWithdrawals:      asyncHandler(resumeWithdrawals),
+  getTransactionDetail:   asyncHandler(getTransactionDetail),
+  listAllInvoices:        asyncHandler(listAllInvoices),
+  getInvoiceDetail:       asyncHandler(getInvoiceDetail),
+  adminCancelInvoice:     asyncHandler(adminCancelInvoice),
 };

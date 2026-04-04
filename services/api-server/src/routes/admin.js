@@ -24,6 +24,8 @@ const {
   getDashboard, listTransactions,
   listPendingWithdrawals, approveWithdrawal,
   getAuditLog, pauseWithdrawals, resumeWithdrawals,
+  getTransactionDetail,
+  listAllInvoices, getInvoiceDetail, adminCancelInvoice,
 } = require('../controllers/adminController');
 const {
   openDispute, resolveDispute, listDisputes, getDispute,
@@ -40,8 +42,19 @@ const adminAuth = [authenticate, authorize('admin'), require2FA, adminIpWhitelis
 // ─── Dashboard ───────────────────────────────────────────────────────────────
 router.get('/dashboard',                    adminAuth, asyncHandler(getDashboard));
 
-// ─── Transactions ─────────────────────────────────────────────────────────────
+// ─── Transactions ────────────────────────────────────────────────────────────
 router.get('/transactions',                 adminAuth, asyncHandler(listTransactions));
+router.get('/transactions/:id',             adminAuth, asyncHandler(getTransactionDetail));
+
+// ─── Invoices ───────────────────────────────────────────────────────────────
+router.get('/invoices',                     adminAuth, asyncHandler(listAllInvoices));
+router.get('/invoices/:id',                 adminAuth, asyncHandler(getInvoiceDetail));
+// Admin cancel requires TOTP — cancelling an invoice stops customer payment
+router.post('/invoices/:id/cancel',
+  adminAuth,
+  confirmCriticalAction,
+  asyncHandler(adminCancelInvoice),
+);
 
 // ─── Withdrawal Approvals ─────────────────────────────────────────────────────
 router.get('/withdrawals/pending',          adminAuth, asyncHandler(listPendingWithdrawals));
