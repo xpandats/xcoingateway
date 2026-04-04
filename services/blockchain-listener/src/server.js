@@ -18,13 +18,15 @@
 const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, '../../../.env.local') });
 
-const { config, validateConfig } = require('../../api-server/src/config');
-const { connectDB }              = require('@xcg/database');
-const { createLogger }           = require('@xcg/logger');
-const { TronAdapter }            = require('@xcg/tron');
-const { createPublisher, QUEUES } = require('@xcg/queue');
-const IORedis                    = require('ioredis');
-const BlockchainListener         = require('./listener');
+const { config, validateConfig }   = require('../../api-server/src/config');
+const { connectDB }                 = require('@xcg/database');
+const { createLogger }              = require('@xcg/logger');
+const { TronAdapter }               = require('@xcg/tron');
+const { createPublisher, QUEUES }   = require('@xcg/queue');
+const { startHealthServer }         = require('@xcg/common/src/healthServer');
+const IORedis                       = require('ioredis');
+const mongoose                      = require('mongoose');
+const BlockchainListener            = require('./listener');
 
 const logger = createLogger('blockchain-listener');
 
@@ -50,6 +52,9 @@ async function main() {
   redis.on('error', (err) => {
     logger.error('BlockchainListener: Redis error', { error: err.message });
   });
+
+  // Health check server (internal only — port 3092)
+  startHealthServer({ port: 3092, service: 'blockchain-listener', mongoose, redis, logger });
 
   // 4. Initialise TronAdapter
   const tronAdapter = new TronAdapter(

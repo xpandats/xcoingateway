@@ -17,45 +17,21 @@
  *   9. Remove secrets from process.env (SC-3)
  */
 
-const { config, validateConfig } = require('./config');
-const { createLogger }           = require('@xcg/logger');
-const { validateMasterKey }      = require('@xcg/crypto');
-const { connectDB, disconnectDB, Invoice } = require('@xcg/database');
-const { createApp }              = require('./app');
-const IORedis                    = require('ioredis');
+const { config, validateConfig }  = require('./config');
+const { createLogger }             = require('@xcg/logger');
+const { validateMasterKey }        = require('@xcg/crypto');
+const { connectDB, disconnectDB }  = require('@xcg/database');
+const { createApp }                = require('./app');
+const { createPublisher, QUEUES }  = require('@xcg/queue');
+const IORedis                      = require('ioredis');
 
 const logger = createLogger('api-server');
 
 // ─── Invoice Expiry Scheduler ────────────────────────────────────────────────
-// Runs every 60 seconds. Sets any invoices past their expiresAt to 'expired'.
-// Critical: prevents matching engine from matching against expired invoices.
-function startInvoiceExpiryScheduler() {
-  const INTERVAL_MS = 60_000; // 60 seconds
+// Note: Invoice expiry is now handled by the Matching Engine's InvoiceExpiryScanner
+// (services/matching-engine/src/invoiceExpiry.js) which fires payment.expired
+// webhooks per-invoice. No duplicate scheduler needed here.
 
-  async function expireInvoices() {
-    try {
-      const result = await Invoice.updateMany(
-        {
-          status:    { $in: ['pending', 'hash_found'] },
-          expiresAt: { $lte: new Date() },
-        },
-        {
-          $set: { status: 'expired' },
-        },
-      );
-      if (result.modifiedCount > 0) {
-        logger.info('InvoiceExpiry: expired invoices', { count: result.modifiedCount });
-      }
-    } catch (err) {
-      logger.error('InvoiceExpiry: scheduler error', { error: err.message });
-    }
-  }
-
-  // Run immediately on startup, then every 60s
-  expireInvoices();
-  setInterval(expireInvoices, INTERVAL_MS);
-  logger.info('InvoiceExpiry: scheduler started (60s interval)');
-}
 
 // ─── Main Startup ────────────────────────────────────────────────────────────
 
@@ -92,8 +68,17 @@ async function startServer() {
     });
     logger.info('Redis connected');
 
-    // 5. Create Express app with Redis injected
-    const app = createApp(redis);
+    // 4b. Set up queue publishers (for inter-service event publishing)
+    const redisOpts = {
+      host: new URL(config.redis.url).hostname,
+      port: Number(new URL(config.redis.url).port) || 6379,
+    };
+    const paymentCreatedPublisher = createPublisher(
+      QUEUES.PAYMENT_CREATED, redisOpts, config.queue.signingSecret, logger,
+    );
+
+    // 5. Create Express app with Redis + publisher injected
+    const app = createApp(redis, paymentCreatedPublisher);
 
     // 6. Start HTTP server
     const server = app.listen(config.port, () => {
@@ -111,9 +96,7 @@ async function startServer() {
     server.requestTimeout = 30_000;
     server.keepAliveTimeout = 65_000; // Must be > LB idle timeout (typically 60s)
 
-    // 7. Start invoice expiry scheduler
-    startInvoiceExpiryScheduler();
-
+    // NOTE: Invoice expiry is now owned by Matching Engine (fires per-invoice webhooks)
     // SC-3: Remove secrets from process.env after startup
     // config.js and crypto modules have already cached values they need
     const SECRET_KEYS = [

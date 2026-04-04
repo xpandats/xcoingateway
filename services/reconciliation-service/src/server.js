@@ -7,7 +7,9 @@ const { connectDB }                       = require('@xcg/database');
 const { createLogger }                    = require('@xcg/logger');
 const { createPublisher, QUEUES }         = require('@xcg/queue');
 const { TronAdapter }                     = require('@xcg/tron');
+const { startHealthServer }               = require('@xcg/common/src/healthServer');
 const IORedis                             = require('ioredis');
+const mongoose                            = require('mongoose');
 const Reconciler                          = require('./reconciler');
 
 const logger = createLogger('reconciliation-service');
@@ -19,6 +21,9 @@ async function main() {
   await connectDB(config.db.uri, logger);
   const redis = new IORedis(config.redis.url, { maxRetriesPerRequest: null });
   redis.on('error', (err) => logger.error('ReconciliationService: Redis error', { error: err.message }));
+
+  // Health check server (internal only — port 3096)
+  startHealthServer({ port: 3096, service: 'reconciliation-service', mongoose, redis, logger });
 
   const redisOpts = { host: new URL(config.redis.url).hostname, port: Number(new URL(config.redis.url).port) || 6379 };
 

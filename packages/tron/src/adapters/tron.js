@@ -326,15 +326,16 @@ class TronAdapter extends BlockchainAdapter {
 
   /**
    * Check if wallet has enough energy for a USDT TRC20 transfer.
-   * USDT TRC20 requires ~65,000 energy per transfer.
+   * USDT TRC20 requires ~65,000 energy per transfer (from TRON constants).
    *
    * @param {string} address - Tron wallet address
    * @returns {Promise<boolean>}
    */
   async hasSufficientEnergy(address) {
-    const ENERGY_PER_TRC20_TRANSFER = 65_000; // From TRON constants
+    // Use the shared constant — never hardcode energy thresholds
+    const { TRON } = require('@xcg/common').constants;
     const { energy } = await this.getEnergyBalance(address);
-    return energy >= ENERGY_PER_TRC20_TRANSFER;
+    return energy >= TRON.ENERGY_PER_TRC20_TRANSFER;
   }
 }
 

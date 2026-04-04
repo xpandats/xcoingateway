@@ -376,10 +376,11 @@ app.use((err, req, res, _next) => {
  * Invoice and withdrawal routes need Redis for nonce deduplication.
  * Routers are built ONCE here, not on every request.
  *
- * @param {object} [redisClient] - IORedis instance
+ * @param {object} [redisClient]            - IORedis instance
+ * @param {object} [paymentCreatedPublisher] - Queue publisher for payment.created events
  * @returns {express.Application}
  */
-function createApp(redisClient) {
+function createApp(redisClient, paymentCreatedPublisher) {
   if (redisClient) {
     app.locals.redis = redisClient;
     // Build routers ONCE at startup with the real Redis client
@@ -392,6 +393,13 @@ function createApp(redisClient) {
     app.locals._invoiceRouter    = invoiceRouter;
     app.locals._withdrawalRouter = withdrawalRouter;
   }
+
+  // Wire payment.created publisher into invoice controller (non-blocking event)
+  if (paymentCreatedPublisher) {
+    const { setPaymentCreatedPublisher } = require('./controllers/invoiceController');
+    setPaymentCreatedPublisher(paymentCreatedPublisher);
+  }
+
   return app;
 }
 

@@ -54,13 +54,33 @@ function _registerListeners(uri) {
 /**
  * Connect to MongoDB with retry logic.
  *
- * @param {string} [uri] - MongoDB URI (defaults to MONGODB_URI env var)
- * @param {object} [options] - Mongoose connection options
+ * @param {string} [uri]     - MongoDB URI (defaults to MONGODB_URI env var)
+ * @param {object} [loggerOrOptions] - Logger instance OR Mongoose options object
+ * @param {object} [options] - Mongoose connection options (if logger passed as 2nd param)
  * @returns {Promise<void>}
  * @throws {Error} After max retries exceeded
  */
-async function connectDB(uri = null, options = {}) {
+async function connectDB(uri = null, loggerOrOptions = {}, options = {}) {
   const mongoUri = uri || process.env.MONGODB_URI;
+
+  // Allow (uri, logger) or (uri, options) calling conventions
+  // Detect if second param is a logger (has .info method) or options object
+  let externalLogger = null;
+  let mongoOptions   = options;
+  if (loggerOrOptions && typeof loggerOrOptions.info === 'function') {
+    externalLogger = loggerOrOptions; // It's a logger
+    mongoOptions   = options;
+  } else if (loggerOrOptions && typeof loggerOrOptions === 'object') {
+    mongoOptions = loggerOrOptions; // It's options
+  }
+
+  const _log = (level, msg, meta) => {
+    if (externalLogger && typeof externalLogger[level] === 'function') {
+      externalLogger[level](msg, meta);
+    } else {
+      logger[level](msg, meta);
+    }
+  };
 
   if (!mongoUri) {
     throw new Error('FATAL: MONGODB_URI is not set. Cannot connect to database.');
@@ -78,7 +98,7 @@ async function connectDB(uri = null, options = {}) {
     // F3: Kill queries taking longer than 10 seconds to prevent DoS via slow queries
     socketTimeoutMS: 45000,
     connectTimeoutMS: 10000,
-    ...options,
+    ...mongoOptions,
   };
 
   // F3: Global query timeout via Mongoose plugin
@@ -91,12 +111,12 @@ async function connectDB(uri = null, options = {}) {
   while (retries < maxRetries) {
     try {
       await mongoose.connect(mongoUri, defaultOptions);
-      logger.info('MongoDB connection established successfully');
+      _log('info', 'MongoDB connection established successfully');
       return;
     } catch (err) {
       retries++;
       const delay = Math.min(1000 * Math.pow(2, retries), 30000);
-      logger.error(`MongoDB connection attempt ${retries}/${maxRetries} failed`, {
+      _log('error', `MongoDB connection attempt ${retries}/${maxRetries} failed`, {
         error: err.message,
         retryInMs: delay,
       });
