@@ -88,7 +88,7 @@ jest.mock('@xcg/database', () => {
   };
 });
 
-const app = require('../src/app');
+const { app } = require('../src/app');
 
 // ─── Helpers ─────────────────────────────────────────────────
 
@@ -132,12 +132,20 @@ describe('Request ID Propagation', () => {
     expect(res.headers['x-request-id'].length).toBeGreaterThan(10);
   });
 
-  test('Server echoes client-provided x-request-id', async () => {
-    const clientId = 'test-req-abc-123';
+  test('Server echoes client-provided x-request-id when it is a valid UUID', async () => {
+    const clientId = '550e8400-e29b-41d4-a716-446655440000'; // valid UUID v4 format
     const res = await request(app)
       .get('/internal/health')
       .set('x-request-id', clientId);
     expect(res.headers['x-request-id']).toBe(clientId);
+  });
+
+  test('Server generates new x-request-id when client sends invalid format', async () => {
+    const res = await request(app)
+      .get('/internal/health')
+      .set('x-request-id', 'invalid-non-uuid-string');
+    expect(res.headers['x-request-id']).toBeDefined();
+    expect(res.headers['x-request-id']).not.toBe('invalid-non-uuid-string');
   });
 });
 
@@ -150,17 +158,19 @@ describe('Health Endpoints', () => {
     const res = await request(app).get('/internal/health');
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
-    expect(res.body.data.service).toBe('api-server');
     expect(res.body.data.status).toBe('alive');
+    // NOTE: service name intentionally omitted — ID-4 prevents info disclosure
+    expect(res.body.data.uptime).toBeDefined();
+    expect(res.body.data.timestamp).toBeDefined();
   });
 
   test('GET /internal/health/ready — readiness probe has correct shape', async () => {
     const res = await request(app).get('/internal/health/ready');
     expect(typeof res.body.success).toBe('boolean');
     expect(res.body.data).toBeDefined();
-    expect(res.body.data.checks).toBeDefined();
-    expect(res.body.data.checks.database).toBeDefined();
-    expect(res.body.data.checks.memory).toBeDefined();
+    // Readiness returns status and timestamp only — no internal details (ID-4 security)
+    expect(res.body.data.status).toBeDefined();
+    expect(res.body.data.timestamp).toBeDefined();
   });
 });
 

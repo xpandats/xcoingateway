@@ -26,10 +26,10 @@
  *   );
  */
 
-const speakeasy  = require('speakeasy');
-const { User }   = require('@xcg/database');
-const { AppError }  = require('@xcg/common');
-const { createLogger }= require('@xcg/logger');
+const speakeasy      = require('speakeasy');
+const { User }       = require('@xcg/database');
+const { AppError }   = require('@xcg/common');
+const { createLogger } = require('@xcg/logger');
 
 const logger = createLogger('security');
 

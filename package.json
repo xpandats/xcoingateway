@@ -50,6 +50,7 @@
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^9.3.3",
     "otplib": "^13.4.0",
+    "speakeasy": "^2.0.0",
     "tronweb": "^6.0.0",
     "uuid": "^11.1.0",
     "xml2js": "^0.6.2"
