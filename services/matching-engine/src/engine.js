@@ -20,6 +20,7 @@ const { v4: uuidv4 } = require('uuid');
 const { Invoice, Transaction, LedgerEntry } = require('@xcg/database');
 const { money }  = require('@xcg/common');
 const { INVOICE_STATUS, TX_STATUS } = require('@xcg/common').constants;
+const FraudEngine = require('@xcg/common/src/fraudEngine');
 
 // ─── HARDCODED CONSTANTS — NEVER from config/env ─────────────────────────────
 const USDT_CONTRACTS = new Set([
@@ -35,6 +36,9 @@ class MatchingEngine {
     this.alertPublisher      = alertPublisher;
     this.withdrawalPublisher = withdrawalPublisher;
     this.logger              = logger;
+
+    // Fraud engine — runs before every payment is accepted
+    this.fraud = new FraudEngine({ alertPublisher, logger });
   }
 
   async handle(txData, idempotencyKey) {
@@ -82,7 +86,24 @@ class MatchingEngine {
       return;
     }
 
-    // 4. PHASE 1: Detection — set HASH_FOUND + create DETECTING Transaction record.
+    // 4. FRAUD CHECK — before any state change
+    //    Runs after invoice is found (so we have merchantId for velocity/anomaly checks)
+    const fraudResult = await this.fraud.checkIncomingTransaction(txData, invoice);
+    if (fraudResult.blocked) {
+      this.logger.warn('MatchingEngine: transaction BLOCKED by fraud engine', {
+        txHash, reason: fraudResult.reason, riskScore: fraudResult.riskScore,
+      });
+      await this._recordFailed(txData, `fraud_blocked:${fraudResult.eventType}`);
+      return;
+    }
+    if (fraudResult.flagged) {
+      this.logger.warn('MatchingEngine: transaction FLAGGED by fraud engine — proceeding with flag', {
+        txHash, reason: fraudResult.reason, riskScore: fraudResult.riskScore,
+      });
+      // Continues processing — fraud event already logged and alert fired
+    }
+
+    // 5. PHASE 1: Detection — set HASH_FOUND + create DETECTING Transaction record.
     //    The ConfirmationTracker will poll this transaction and call _confirmPayment()
     //    once minConfirmations (19) is reached.
     await this._detectPayment(txData, invoice);

@@ -10,6 +10,7 @@
 const Joi        = require('joi');
 const { validate, AppError } = require('@xcg/common');
 const { INVOICE_STATUS } = require('@xcg/common').constants;
+const FraudEngine    = require('@xcg/common/src/fraudEngine');
 const asyncHandler   = require('../utils/asyncHandler');
 const InvoiceService = require('../services/invoiceService');
 const WalletService  = require('../services/walletService');
@@ -22,11 +23,13 @@ let _paymentCreatedPublisher = null;
 function setPaymentCreatedPublisher(publisher) { _paymentCreatedPublisher = publisher; }
 
 // Lazy-init singletons
-let _walletService, _invoiceService;
+let _walletService, _invoiceService, _fraud;
 
 function getServices() {
   if (!_walletService) _walletService = new WalletService({ logger });
   if (!_invoiceService) _invoiceService = new InvoiceService({ walletService: _walletService, logger });
+  // FraudEngine uses alertPublisher — wired when publisher is available, else no alert
+  if (!_fraud) _fraud = new FraudEngine({ alertPublisher: _paymentCreatedPublisher, logger });
   return _invoiceService;
 }
 
@@ -57,6 +60,19 @@ async function createInvoice(req, res) {
     const { validateOutboundUrl } = require('../middleware/ssrfProtection');
     await validateOutboundUrl(data.callbackUrl);
   }
+
+  // FRAUD CHECK: velocity limits + amount cap before invoice is created
+  // This prevents API abuse (merchants flooding invoice creation)
+  getServices(); // Ensure _fraud is initialised
+  const fraudResult = await _fraud.checkInvoiceCreation(
+    req.merchant._id,
+    { baseAmount: data.amount },
+    { ipAddress: req.ip, userAgent: req.headers['user-agent'] },
+  );
+  if (fraudResult.blocked) {
+    throw new AppError(429, fraudResult.reason, 'FRAUD_BLOCKED');
+  }
+  // Flagged = proceed but it's already logged + alerted by fraud engine
 
   const invoice = await getServices().createInvoice(data, req.merchant);
 

@@ -28,6 +28,10 @@ const {
 const {
   openDispute, resolveDispute, listDisputes, getDispute,
 } = require('../controllers/disputeController');
+const {
+  listBlacklist, addToBlacklist, removeFromBlacklist,
+  listFraudEvents, getFraudStats,
+} = require('../controllers/fraudController');
 
 // ─── Full admin security stack ────────────────────────────────────────────────
 // Every admin route goes through all 4 layers
@@ -69,6 +73,25 @@ router.post('/disputes/:id/resolve',
   confirmCriticalAction,     // ← TOTP required — releasing frozen funds is critical
   asyncHandler(resolveDispute),
 );
+
+// ─── Fraud & Risk Management ──────────────────────────────────────────────────
+// Blacklist: read + add
+router.get('/fraud/blacklist',              adminAuth, asyncHandler(listBlacklist));
+router.post('/fraud/blacklist',
+  adminAuth,
+  confirmCriticalAction,     // ← TOTP required — blacklisting is an irreversible action
+  asyncHandler(addToBlacklist),
+);
+// Blacklist: remove (deactivate only — never delete, audit trail preserved)
+router.delete('/fraud/blacklist/:id',
+  adminAuth,
+  confirmCriticalAction,     // ← TOTP required
+  asyncHandler(removeFromBlacklist),
+);
+
+// Fraud event log — read only
+router.get('/fraud/events',                 adminAuth, asyncHandler(listFraudEvents));
+router.get('/fraud/stats',                  adminAuth, asyncHandler(getFraudStats));
 
 // ─── Emergency Controls (super_admin only + TOTP) ─────────────────────────────
 // Double role check: must be super_admin (not just admin)
