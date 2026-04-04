@@ -41,9 +41,12 @@ const userSchema = new mongoose.Schema({
   approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
   approvedAt: { type: Date, default: null },
 
-  // 2FA (select:false — never returned in normal queries)
-  twoFactorSecret: { type: String, default: null, select: false }, // Encrypted TOTP secret
-  twoFactorEnabled: { type: Boolean, default: false },
+  // 2FA (select:false — NEVER returned in any query unless explicitly requested)
+  // P1-A FIX: Without select:false, every findOne() exposes the encrypted TOTP secret.
+  // The encrypted blob itself is not plaintext, but defence-in-depth requires it be hidden.
+  twoFactorSecret:        { type: String, default: null, select: false },
+  twoFactorEnabled:       { type: Boolean, default: false },
+  twoFactorSetupExpiresAt:{ type: Date, default: null, index: true }, // Pending setup TTL
 
   // Security
   failedLoginAttempts:  { type: Number, default: 0 },
@@ -52,10 +55,6 @@ const userSchema = new mongoose.Schema({
   lastLoginAt:          { type: Date, default: null },
   lastLoginIp:          { type: String, default: null }, // Stored as SHA-256 hash for privacy
   passwordChangedAt:    { type: Date, default: null },
-
-  // GAP 5: Pending 2FA setup secret must expire (10 min TTL)
-  // If setup is abandoned, secret is never verified and this controls its lifecycle.
-  twoFactorSetupExpiresAt: { type: Date, default: null, index: true },
 
   // Password history (select:false — internal use only)
   passwordHistory: { type: [String], default: [], select: false },

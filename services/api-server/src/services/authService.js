@@ -36,6 +36,23 @@ const logger = createLogger('auth-service');
 const audit = createAuditLogger(AuditLog);
 const { AUTH, ROLES, AUDIT_ACTIONS } = constants;
 
+// P2-A: Alert publisher — injected at startup by server.js
+// Non-blocking: alert failures never crash auth logic
+let _alertPublisher = null;
+exports.setAlertPublisher = (publisher) => { _alertPublisher = publisher; };
+
+async function _fireSecurityAlert(type, details = {}) {
+  if (!_alertPublisher) return;
+  try {
+    await _alertPublisher.publish(
+      { type, service: 'api-server', ...details },
+      `alert:${type}:${Date.now()}`,
+    );
+  } catch {
+    // Never let alert publishing crash auth logic
+  }
+}
+
 // CRYPTO-1: Only accept TOTP codes valid in the EXACT current 30s window.
 // Default window of ±1 gives 90s attack window. Zero = 30s only.
 // otplib v13: use class-based instantiation with options
@@ -268,6 +285,11 @@ async function login(data, ip, userAgent) {
         metadata: { attempts: user.failedLoginAttempts },
       });
       logger.warn('Account locked', { userId: user._id, attempts: user.failedLoginAttempts });
+      // P2-A: Alert admin immediately — brute-force attack in progress
+      await _fireSecurityAlert('account_locked_brute_force', {
+        message: `Account locked after ${user.failedLoginAttempts} failed password attempts`,
+        userId: user._id.toString(),
+      });
     }
 
     await user.save();

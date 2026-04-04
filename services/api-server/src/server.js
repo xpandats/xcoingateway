@@ -77,6 +77,14 @@ async function startServer() {
       QUEUES.PAYMENT_CREATED, redisOpts, config.queue.signingSecret, logger,
     );
 
+    // 4c. Alert publisher — wired into authService for brute-force lockout notifications
+    const alertPublisher = createPublisher(
+      QUEUES.SYSTEM_ALERT, redisOpts, config.queue.signingSecret, logger,
+    );
+    const authService = require('./services/authService');
+    authService.setAlertPublisher(alertPublisher);
+    logger.info('Alert publisher wired into authService');
+
     // 5. Create Express app with Redis + publisher injected
     const app = createApp(redis, paymentCreatedPublisher);
 

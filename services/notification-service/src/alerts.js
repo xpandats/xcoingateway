@@ -39,6 +39,8 @@ const ALERT_EMOJI = {
   underpayment:                 '🟡',
   overpayment:                  '🟡',
   duplicate_payment:            '🚨',
+  account_locked_brute_force:   '🔐',
+  totp_brute_force:             '🔐',
   system_error:                 '❌',
   default:                      'ℹ️',
 };

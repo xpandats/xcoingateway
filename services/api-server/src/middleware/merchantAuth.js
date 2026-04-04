@@ -164,18 +164,37 @@ async function merchantAuth(req, res, next) {
     }
 
     // 4. Validate HMAC signature
-    const decryptedSecret = decrypt(apiKey.apiSecret);
-    const canonicalString = _buildCanonicalString(req, timestamp, nonce);
-    const expectedSignature = crypto
-      .createHmac('sha256', decryptedSecret)
-      .update(canonicalString)
-      .digest('hex');
+    // P1-B FIX: Wrap decrypted secret in Buffer so it can be zeroed after use.
+    // JS strings are immutable — memory cannot be cleared for string values.
+    // Buffer.fill(0) gives us the best available defense in a Node.js runtime.
+    let secretBuffer = null;
+    let signatureMatch = false;
+    try {
+      secretBuffer = Buffer.from(decrypt(apiKey.apiSecret), 'utf8');
 
-    // Constant-time comparison to prevent timing attacks
-    const sigBuffer = Buffer.from(signature, 'hex');
-    const expectedBuffer = Buffer.from(expectedSignature, 'hex');
+      const canonicalString = _buildCanonicalString(req, timestamp, nonce);
+      const expectedSignature = crypto
+        .createHmac('sha256', secretBuffer)
+        .update(canonicalString)
+        .digest('hex');
 
-    if (sigBuffer.length !== expectedBuffer.length || !crypto.timingSafeEqual(sigBuffer, expectedBuffer)) {
+      // Constant-time comparison to prevent timing attacks
+      const sigBuffer      = Buffer.from(signature, 'hex');
+      const expectedBuffer = Buffer.from(expectedSignature, 'hex');
+
+      signatureMatch = (
+        sigBuffer.length === expectedBuffer.length &&
+        crypto.timingSafeEqual(sigBuffer, expectedBuffer)
+      );
+    } finally {
+      // ALWAYS zero the secret from memory — even if an exception is thrown above
+      if (secretBuffer) {
+        secretBuffer.fill(0);
+        secretBuffer = null;
+      }
+    }
+
+    if (!signatureMatch) {
       logger.warn('HMAC signature mismatch', {
         requestId: req.requestId,
         ip: req.ip,
