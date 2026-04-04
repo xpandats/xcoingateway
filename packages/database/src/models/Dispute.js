@@ -53,6 +53,18 @@ const disputeSchema = new mongoose.Schema({
 }, {
   timestamps: true,
   collection: 'disputes',
+  strict: true,  // Never silently drop unknown fields on financial records
 });
+
+// ─── IMMUTABILITY ────────────────────────────────────────────────────────────────
+// Disputes are legal evidence for fraud and chargeback defense.
+// Bulk deletes and full replacements are permanently blocked.
+const disputeImmutableError = (next) => next(
+  new Error('SECURITY VIOLATION: Dispute records are immutable audit evidence. Delete/replace is forbidden.'),
+);
+disputeSchema.pre('deleteOne',         function (next) { disputeImmutableError(next); });
+disputeSchema.pre('deleteMany',        function (next) { disputeImmutableError(next); });
+disputeSchema.pre('findOneAndDelete',  function (next) { disputeImmutableError(next); });
+disputeSchema.pre('findOneAndReplace', function (next) { disputeImmutableError(next); });
 
 module.exports = mongoose.model('Dispute', disputeSchema);

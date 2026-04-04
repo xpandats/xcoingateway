@@ -57,6 +57,7 @@ const walletSchema = new mongoose.Schema({
 }, {
   timestamps: true,
   collection: 'wallets',
+  strict: true,  // G2 FIX: Explicit — highest security model, never accept unknown fields
 });
 
 walletSchema.index({ network: 1, isActive: 1, type: 1 });

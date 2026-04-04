@@ -90,6 +90,10 @@ fraudEventSchema.pre('deleteOne', function () {
 fraudEventSchema.pre('deleteMany', function () {
   throw new Error('SECURITY: FraudEvent is immutable — no deletes allowed');
 });
+// G5 FIX: Was missing findOneAndReplace — complete the immutability surface
+fraudEventSchema.pre('findOneAndReplace', function () {
+  throw new Error('SECURITY: FraudEvent is immutable — no replace allowed');
+});
 
 fraudEventSchema.index({ merchantId: 1, createdAt: -1 });
 fraudEventSchema.index({ fromAddress: 1, createdAt: -1 });

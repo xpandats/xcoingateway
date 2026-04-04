@@ -26,8 +26,10 @@ const refreshTokenSchema = new mongoose.Schema({
   collection: 'refresh_tokens',
 });
 
-// TTL index: MongoDB automatically deletes expired tokens after 24h grace period
-refreshTokenSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 86400 });
+// G3 FIX: expireAfterSeconds:0 means MongoDB deletes the document exactly when expiresAt passes.
+// Previous value of 86400 added a 24-hour grace period — tokens sat in DB 24h after expiry.
+// A payment system should not retain expired session tokens beyond their expiry time.
+refreshTokenSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 // Compound indexes for common queries
 refreshTokenSchema.index({ userId: 1, isRevoked: 1 });

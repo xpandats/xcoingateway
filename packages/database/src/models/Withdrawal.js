@@ -52,6 +52,7 @@ const withdrawalSchema = new mongoose.Schema({
 }, {
   timestamps: true,
   collection: 'withdrawals',
+  strict: true,  // G6 FIX: Every financial model must explicitly reject unknown fields
 });
 
 withdrawalSchema.index({ merchantId: 1, status: 1, createdAt: -1 });

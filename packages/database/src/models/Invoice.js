@@ -68,6 +68,22 @@ invoiceSchema.index({ uniqueAmount: 1, walletAddress: 1 }, { unique: true });
 invoiceSchema.index({ status: 1, expiresAt: 1 }); // For expiry scanning
 invoiceSchema.index({ merchantId: 1, createdAt: -1 }); // For merchant dashboard
 
+// G9 FIX: Enforce metadata size limit — prevents BSON document bloat injection
+// A malicious or poorly-coded merchant SDK could send 16MB metadata per invoice
+invoiceSchema.pre('save', function (next) {
+  if (this.metadata && typeof this.metadata === 'object') {
+    try {
+      const size = Buffer.byteLength(JSON.stringify(this.metadata), 'utf8');
+      if (size > 4096) {
+        return next(new Error(`Invoice metadata exceeds 4KB limit (${size} bytes). Store large data in your own system.`));
+      }
+    } catch {
+      return next(new Error('Invoice metadata must be a JSON-serializable object.'));
+    }
+  }
+  next();
+});
+
 // Safe for external API — excludes internal fee breakdown
 invoiceSchema.methods.toSafeJSON = function () {
   const obj = this.toObject();

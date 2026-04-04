@@ -27,15 +27,16 @@ const merchantSchema = new mongoose.Schema({
 
   // API credentials
   apiKeys: [{
-    keyId: { type: String, required: true },  // Public identifier (indexed via schema.index)
-    keyHash: { type: String, required: true },  // Hashed API key (bcrypt)
-    apiSecret: { type: String, required: true }, // Encrypted API secret (AES-256-GCM)
-    label: { type: String, default: 'default' },
+    keyId:     { type: String, required: true },             // Public identifier
+    // G7 FIX: select:false — these never appear in .lean() queries or explicit .find()
+    keyHash:   { type: String, required: true, select: false },  // bcrypt hash
+    apiSecret: { type: String, required: true, select: false },  // AES-256-GCM encrypted secret
+    label:     { type: String, default: 'default' },
     permissions: [{ type: String }],
-    isActive: { type: Boolean, default: true },
-    lastUsedAt: { type: Date, default: null },
+    isActive:  { type: Boolean, default: true },
+    lastUsedAt:{ type: Date, default: null },
     createdAt: { type: Date, default: Date.now },
-    expiresAt: { type: Date, default: null }, // null = no expiry
+    expiresAt: { type: Date, default: null },  // null = no expiry
   }],
 
   // Webhook configuration

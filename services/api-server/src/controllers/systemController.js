@@ -76,10 +76,13 @@ async function getSystemConfig(req, res) {
   });
 }
 
+// G1 FIX: Import allowed key whitelist from SystemConfig model
+const { ALLOWED_CONFIG_KEYS } = require('@xcg/database').SystemConfig;
+
 // ─── PUT /admin/system/config/:key ────────────────────────────────────────────
 
 const updateConfigSchema = Joi.object({
-  value:       Joi.alternatives().try(Joi.string(), Joi.number(), Joi.boolean(), Joi.object()).required(),
+  value:       Joi.alternatives().try(Joi.string(), Joi.number(), Joi.boolean()).required(), // No objects — prevent injection
   description: Joi.string().max(200).optional(),
 }).options({ stripUnknown: true });
 
@@ -91,18 +94,28 @@ async function updateSystemConfig(req, res) {
     throw AppError.forbidden(`Config key '${key}' is read-only — it is sourced from environment variables`, ErrorCodes.CONFIG_KEY_READONLY);
   }
 
+  // G1 FIX: Validate key against whitelist before touching DB
+  if (ALLOWED_CONFIG_KEYS && !ALLOWED_CONFIG_KEYS.has(key)) {
+    throw AppError.badRequest(`Config key '${key}' is not in the allowed key whitelist. Update ALLOWED_CONFIG_KEYS in SystemConfig model first.`);
+  }
+
+  // G8 FIX: updatedBy is now required — use req.user.userId (set by authenticate middleware)
+  const actorId = req.user.userId || String(req.user._id);
+
   const updated = await SystemConfig.findOneAndUpdate(
     { key },
     {
-      value:       data.value,
-      description: data.description,
-      updatedBy:   req.user._id,
+      $set: {
+        value:       data.value,
+        description: data.description,
+        updatedBy:   actorId,
+      },
     },
-    { upsert: true, new: true, setDefaultsOnInsert: true },
+    { upsert: true, new: true, setDefaultsOnInsert: true, runValidators: true },
   );
 
   await AuditLog.create({
-    actor:      req.user.userId || String(req.user._id),
+    actor:      actorId,
     action:     'system.config_updated',
     resource:   'system_config',
     resourceId: key,
@@ -115,7 +128,7 @@ async function updateSystemConfig(req, res) {
   logger.warn('SystemCtrl: config key updated', {
     key,
     newValue: data.value,
-    adminId:  req.user.userId || String(req.user._id),
+    adminId:  actorId,
   });
 
   res.json({ success: true, data: { config: updated } });
