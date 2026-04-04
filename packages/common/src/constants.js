@@ -80,11 +80,12 @@ const WEBHOOK_DELIVERY_STATUS = Object.freeze({
 });
 
 const LEDGER_ACCOUNTS = Object.freeze({
-  MERCHANT_RECEIVABLE: 'merchant_receivable',
-  PLATFORM_FEE: 'platform_fee',
-  MERCHANT_WITHDRAWAL: 'merchant_withdrawal',
-  DISPUTE_HOLD: 'dispute_hold',
-  SYSTEM_RESERVE: 'system_reserve',
+  HOT_WALLET_INCOMING: 'hot_wallet_incoming', // Funds received on-chain (debit side of inflow)
+  MERCHANT_RECEIVABLE: 'merchant_receivable',  // Money owed to merchant (net of fees)
+  PLATFORM_FEE:        'platform_fee',         // Platform revenue
+  MERCHANT_WITHDRAWAL: 'merchant_withdrawal',  // Money sent out to merchant
+  DISPUTE_HOLD:        'dispute_hold',         // Funds frozen under dispute
+  SYSTEM_RESERVE:      'system_reserve',       // System reserve fund
 });
 
 const LEDGER_ENTRY_TYPE = Object.freeze({

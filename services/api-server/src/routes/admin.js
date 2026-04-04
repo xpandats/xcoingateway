@@ -25,6 +25,9 @@ const {
   listPendingWithdrawals, approveWithdrawal,
   getAuditLog, pauseWithdrawals, resumeWithdrawals,
 } = require('../controllers/adminController');
+const {
+  openDispute, resolveDispute, listDisputes, getDispute,
+} = require('../controllers/disputeController');
 
 // ─── Full admin security stack ────────────────────────────────────────────────
 // Every admin route goes through all 4 layers
@@ -48,6 +51,24 @@ router.put('/withdrawals/:id/approve',
 
 // ─── Audit Log ────────────────────────────────────────────────────────────────
 router.get('/audit-log',                    adminAuth, asyncHandler(getAuditLog));
+
+// ─── Dispute Management ───────────────────────────────────────────────────────
+// List + get: read-only, standard admin auth
+router.get('/disputes',                     adminAuth, asyncHandler(listDisputes));
+router.get('/disputes/:id',                 adminAuth, asyncHandler(getDispute));
+
+// Open dispute: freezes merchant funds atomically
+router.post('/disputes',
+  adminAuth,
+  asyncHandler(openDispute),
+);
+
+// CRITICAL: Resolve dispute releases or redirects frozen funds
+router.post('/disputes/:id/resolve',
+  adminAuth,
+  confirmCriticalAction,     // ← TOTP required — releasing frozen funds is critical
+  asyncHandler(resolveDispute),
+);
 
 // ─── Emergency Controls (super_admin only + TOTP) ─────────────────────────────
 // Double role check: must be super_admin (not just admin)

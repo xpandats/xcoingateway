@@ -131,14 +131,35 @@ class MatchingEngine {
           detectedAt:           txData.detectedAt ? new Date(txData.detectedAt) : new Date(),
         }], { session });
 
-        // Double-entry ledger (atomic)
-        const baseAmount  = invoice.baseAmount;
-        const platformFee = money.round(baseAmount * this.platformFeeRate, 6);
-        const netAmount   = money.round(baseAmount - platformFee, 6);
-        const creditId    = `led_${uuidv4().replace(/-/g, '')}`;
-        const feeId       = `led_${uuidv4().replace(/-/g, '')}`;
+        // TRUE DOUBLE-ENTRY LEDGER (3 atomic entries):
+        //   1. hot_wallet_incoming:  DEBIT  full received amount (money arrived on-chain)
+        //   2. merchant_receivable:  CREDIT net amount after fee (money owed to merchant)
+        //   3. platform_fee:         CREDIT platform fee (our revenue)
+        // This is proper accounting: Debit side = Credit side = fullAmount
+        const receivedAmt  = parseFloat(txData.amount); // actual on-chain amount
+        const platformFee  = money.round(receivedAmt * this.platformFeeRate, 6);
+        const netAmount    = money.round(receivedAmt - platformFee, 6);
+
+        const incomingId   = `led_${uuidv4().replace(/-/g, '')}`;
+        const creditId     = `led_${uuidv4().replace(/-/g, '')}`;
+        const feeId        = `led_${uuidv4().replace(/-/g, '')}`;
 
         await LedgerEntry.create([
+          // DEBIT: hot wallet received this amount from the blockchain
+          {
+            entryId:            incomingId,
+            account:            'hot_wallet_incoming',
+            type:               'debit',
+            amount:             receivedAmt,
+            currency:           'USDT',
+            merchantId:         invoice.merchantId,
+            invoiceId:          invoice._id,
+            counterpartEntryId: creditId,
+            description:        `On-chain receipt — ${invoice.invoiceId} (${txData.txHash.slice(0,12)}...)`,
+            idempotencyKey:     `ledger:incoming:${txData.txHash}`,
+            balanceAfter:       0,
+          },
+          // CREDIT: net amount owed to merchant
           {
             entryId:            creditId,
             account:            'merchant_receivable',
@@ -147,11 +168,12 @@ class MatchingEngine {
             currency:           'USDT',
             merchantId:         invoice.merchantId,
             invoiceId:          invoice._id,
-            counterpartEntryId: feeId,
-            description:        `Payment received — ${invoice.invoiceId}`,
+            counterpartEntryId: incomingId,
+            description:        `Payment net — ${invoice.invoiceId}`,
             idempotencyKey:     `ledger:recv:${txData.txHash}`,
             balanceAfter:       0,
           },
+          // CREDIT: platform fee
           {
             entryId:            feeId,
             account:            'platform_fee',
@@ -160,8 +182,8 @@ class MatchingEngine {
             currency:           'USDT',
             merchantId:         invoice.merchantId,
             invoiceId:          invoice._id,
-            counterpartEntryId: creditId,
-            description:        `Platform fee ${(this.platformFeeRate * 100).toFixed(1)}% — ${invoice.invoiceId}`,
+            counterpartEntryId: incomingId,
+            description:        `Platform fee ${(this.platformFeeRate * 100).toFixed(2)}% — ${invoice.invoiceId}`,
             idempotencyKey:     `ledger:fee:${txData.txHash}`,
             balanceAfter:       0,
           },

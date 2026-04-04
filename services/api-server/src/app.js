@@ -58,6 +58,7 @@ const healthRoutes       = require('./routes/health');
 const walletRoutes       = require('./routes/wallets');
 const merchantRoutes     = require('./routes/merchants');
 const adminRoutes        = require('./routes/admin');
+const supportRoutes      = require('./routes/support');
 // Factory routes — redisClient injected once at app creation time (NOT per-request)
 const invoiceRouteFactory    = require('./routes/invoices');
 const withdrawalRouteFactory = require('./routes/withdrawals');
@@ -300,6 +301,9 @@ app.use('/internal/health',         healthLimiter, healthRoutes);
 app.use('/admin/wallets',           walletRoutes);
 app.use('/admin/merchants',         merchantRoutes);
 app.use('/admin',                   adminRoutes);   // dashboard, transactions, withdrawals, audit
+
+// ─── Support routes (authenticate + authorize('support') + IP whitelist) ─────
+app.use('/support',                 supportRoutes);
 
 // ─── Merchant API (HMAC-signed) ── routers built once in createApp() ───────────────
 // Delegate to cached pre-built routers (avoids per-request router creation)
