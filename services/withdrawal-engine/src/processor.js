@@ -18,7 +18,8 @@
 
 const { v4: uuidv4 }  = require('uuid');
 const mongoose         = require('mongoose');
-const { Withdrawal, LedgerEntry, Wallet, Merchant } = require('@xcg/database');
+const { Withdrawal, LedgerEntry, Wallet, Merchant, Dispute } = require('@xcg/database');
+const { DISPUTE_STATUS } = require('@xcg/common').constants;
 
 class WithdrawalProcessor {
   /**
@@ -76,6 +77,27 @@ class WithdrawalProcessor {
       await this._alert('withdrawal_to_own_wallet', { merchantId, toAddress: merchant.withdrawalAddress });
       return;
     }
+
+    // ── 2b. SECURITY: Check for active disputes against this merchant ─────────
+    // Disputed funds MUST NOT be withdrawn until the dispute is resolved.
+    // Without this check, a merchant could withdraw funds while a dispute is pending,
+    // leaving the platform unable to issue a refund.
+    const activeDispute = await Dispute.exists({
+      merchantId,
+      status: { $in: [DISPUTE_STATUS.OPENED, DISPUTE_STATUS.MERCHANT_RESPONDED, DISPUTE_STATUS.UNDER_REVIEW] },
+    });
+    if (activeDispute) {
+      this.logger.warn('WithdrawalProcessor: BLOCKED — active dispute exists for merchant', {
+        merchantId,
+        message: 'Cannot withdraw while a dispute is open',
+      });
+      await this._alert('withdrawal_blocked_active_dispute', {
+        merchantId,
+        message: `Withdrawal blocked: merchant ${merchantId} has an active dispute. Funds held until resolved.`,
+      });
+      return;
+    }
+
 
     // ── 3. Per-transaction limit check ────────────────────────────────────────
     const perTxLimit = this.config.perTxWithdrawalLimit; // 1000 USDT

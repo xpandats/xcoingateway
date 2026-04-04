@@ -46,11 +46,16 @@ const userSchema = new mongoose.Schema({
   twoFactorEnabled: { type: Boolean, default: false },
 
   // Security
-  failedLoginAttempts: { type: Number, default: 0 },
-  lockUntil: { type: Date, default: null },
-  lastLoginAt: { type: Date, default: null },
-  lastLoginIp: { type: String, default: null },       // Stored as SHA-256 hash for privacy
-  passwordChangedAt: { type: Date, default: null },
+  failedLoginAttempts:  { type: Number, default: 0 },
+  totpFailedAttempts:   { type: Number, default: 0 },   // GAP 4+14: separate TOTP brute-force counter
+  lockUntil:            { type: Date, default: null },
+  lastLoginAt:          { type: Date, default: null },
+  lastLoginIp:          { type: String, default: null }, // Stored as SHA-256 hash for privacy
+  passwordChangedAt:    { type: Date, default: null },
+
+  // GAP 5: Pending 2FA setup secret must expire (10 min TTL)
+  // If setup is abandoned, secret is never verified and this controls its lifecycle.
+  twoFactorSetupExpiresAt: { type: Date, default: null, index: true },
 
   // Password history (select:false — internal use only)
   passwordHistory: { type: [String], default: [], select: false },

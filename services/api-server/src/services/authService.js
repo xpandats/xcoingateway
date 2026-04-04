@@ -286,15 +286,57 @@ async function login(data, ip, userAgent) {
     if (!data.totpCode) {
       throw AppError.unauthorized('2FA code required', ErrorCodes.AUTH_2FA_REQUIRED);
     }
+
+    // GAP 4+14: TOTP brute-force protection
+    // Track TOTP failures separately — 3 consecutive failures locks the account.
+    // Without this, an attacker knowing the password can brute-force 6-digit TOTP
+    // (1,000,000 combinations) with no lockout budget being consumed.
+    const MAX_TOTP_FAILURES = 3;
+    if ((user.totpFailedAttempts || 0) >= MAX_TOTP_FAILURES) {
+      user.lockUntil = new Date(Date.now() + config.rateLimit.authLockoutMs);
+      await user.save();
+      await _audit(AUDIT_ACTIONS.AUTH_ACCOUNT_LOCKED, {
+        actor: user._id.toString(),
+        resourceId: user._id.toString(),
+        metadata: { reason: 'totp_brute_force', attempts: user.totpFailedAttempts },
+      });
+      throw AppError.unauthorized(
+        'Account locked due to too many 2FA failures. Try again later.',
+        ErrorCodes.AUTH_ACCOUNT_LOCKED,
+      );
+    }
+
     const isValidTotp = await _validateTOTP(user._id, data.totpCode, user.twoFactorSecret);
     if (!isValidTotp) {
+      user.totpFailedAttempts = (user.totpFailedAttempts || 0) + 1;
+      if (user.totpFailedAttempts >= MAX_TOTP_FAILURES) {
+        user.lockUntil = new Date(Date.now() + config.rateLimit.authLockoutMs);
+        await _audit(AUDIT_ACTIONS.AUTH_ACCOUNT_LOCKED, {
+          actor: user._id.toString(),
+          resourceId: user._id.toString(),
+          metadata: { reason: 'totp_brute_force', attempts: user.totpFailedAttempts },
+        });
+        logger.warn('Account locked — TOTP brute force', {
+          userId: user._id, attempts: user.totpFailedAttempts,
+        });
+      }
+      await user.save();
+      await _audit(AUDIT_ACTIONS.AUTH_LOGIN_FAILED, {
+        actor: user._id.toString(),
+        resourceId: user._id.toString(),
+        metadata: { reason: 'invalid_totp', totpAttempts: user.totpFailedAttempts },
+      });
       throw AppError.unauthorized('Invalid or already used 2FA code', ErrorCodes.AUTH_2FA_INVALID);
     }
+
+    // TOTP success — reset failure counter
+    user.totpFailedAttempts = 0;
   }
 
   // ── Success: reset attempts, create tokens ──
 
   user.failedLoginAttempts = 0;
+  user.totpFailedAttempts  = 0;  // Reset TOTP counter on successful full login
   user.lockUntil = null;
   user.lastLoginAt = new Date();
   // Hash IP for privacy (GDPR) — SHA-256 of IP is still useful for security analysis
@@ -631,10 +673,12 @@ async function setup2FA(userId) {
   const secret = generateSecret();
   const otpAuthUrl = totp.keyuri(user.email, 'XCoinGateway', secret);
 
-  // Store as pending (encrypted) in a temp field — cleared if never verified
-  // In production: use Redis with TTL instead. For MVP: store as pending secret.
+  // GAP 5: Store as pending (encrypted) with 10-minute expiry.
+  // If setup is abandoned, the unverified secret auto-expires
+  // so a DB breach cannot extract an unverified TOTP secret indefinitely.
   user.twoFactorSecret = encrypt(secret);
   user.twoFactorEnabled = false; // Not enabled until verify2FA() succeeds
+  user.twoFactorSetupExpiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 min TTL
   await user.save();
 
   // Return the RAW secret for QR scanning (one-time only)
@@ -661,13 +705,25 @@ async function verify2FA(userId, totpCode) {
     throw AppError.badRequest('2FA setup not initiated. Call POST /2fa/setup first.');
   }
 
+  // GAP 5: Reject if pending setup has expired (10-minute TTL)
+  if (user.twoFactorSetupExpiresAt && user.twoFactorSetupExpiresAt < new Date()) {
+    // Clear the expired pending secret
+    user.twoFactorSecret = null;
+    user.twoFactorSetupExpiresAt = null;
+    await user.save();
+    throw AppError.badRequest(
+      '2FA setup session expired. Please call POST /2fa/setup again to restart.',
+    );
+  }
+
   const isValid = await _validateTOTP(user._id, totpCode, user.twoFactorSecret);
   if (!isValid) {
     throw AppError.unauthorized('Invalid or already used 2FA code', ErrorCodes.AUTH_2FA_INVALID);
   }
 
-  // Only NOW mark 2FA as enabled
+  // Only NOW mark 2FA as enabled, clear setup expiry
   user.twoFactorEnabled = true;
+  user.twoFactorSetupExpiresAt = null; // Clear — no longer pending
   await user.save();
 
   await _audit(AUDIT_ACTIONS.AUTH_2FA_ENABLED, { actor: userId, resourceId: userId });

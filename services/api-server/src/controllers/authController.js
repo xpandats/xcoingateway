@@ -27,25 +27,27 @@ const authService = require('../services/authService');
 
 // ─── Cookie Helpers (HTTP-only concern) ──────────────────────
 
+// GAP 8: __Host- prefix enforces Secure=true, Path=/, no Domain.
+// This prevents subdomain-based cookie theft attacks.
+// The browser will refuse to set this cookie without those attributes.
+const REFRESH_COOKIE_NAME = '__Host-refreshToken';
+
 function _setRefreshCookie(res, token) {
-  res.cookie('refreshToken', token, {
+  res.cookie(REFRESH_COOKIE_NAME, token, {
     httpOnly: true,
-    // CSRF-3: Always secure — even in dev use HTTPS via mkcert/reverse proxy
-    // HTTP is never acceptable for sensitive auth cookies
-    secure: true,
+    secure:   true,          // Required by __Host- prefix
     sameSite: 'strict',
-    path: '/api/v1/auth/refresh',
-    maxAge: 7 * 24 * 60 * 60 * 1000,
+    path:     '/',           // Required by __Host- prefix (must be /)
+    maxAge:   7 * 24 * 60 * 60 * 1000,
+    // NOTE: Do NOT set domain attribute — required by __Host- prefix semantics
   });
 }
 
 function _clearRefreshCookie(res) {
-  const cookieOpts = { httpOnly: true, secure: true, sameSite: 'strict' };
-  // S-2: Clear with BOTH paths — belt-and-suspenders.
-  // If cookie was ever set with a different path (bug, migration), it won't
-  // be cleared by a single path-specific clearCookie call.
-  res.clearCookie('refreshToken', { ...cookieOpts, path: '/api/v1/auth/refresh' });
-  res.clearCookie('refreshToken', { ...cookieOpts, path: '/' });
+  // Clear with the exact same attributes used to set the cookie
+  res.clearCookie(REFRESH_COOKIE_NAME, {
+    httpOnly: true, secure: true, sameSite: 'strict', path: '/',
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -103,7 +105,7 @@ exports.login = async (req, res, next) => {
 
 exports.logout = async (req, res, next) => {
   try {
-    await authService.logout(req.cookies.refreshToken, req.user.userId);
+    await authService.logout(req.cookies[REFRESH_COOKIE_NAME], req.user.userId);
     _clearRefreshCookie(res);
     res.json(response.success(null, 'Logged out successfully'));
   } catch (err) {
@@ -132,7 +134,7 @@ exports.logoutAll = async (req, res, next) => {
 exports.refresh = async (req, res, next) => {
   try {
     const result = await authService.refreshTokens(
-      req.cookies.refreshToken,
+      req.cookies[REFRESH_COOKIE_NAME],
       req.ip,
       req.get('user-agent'),
     );

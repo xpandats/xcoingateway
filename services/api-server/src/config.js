@@ -155,6 +155,13 @@ function validateConfig() {
     errors.push('HMAC_SECRET must be exactly 64 hex characters (256-bit minimum entropy)');
   }
 
+  // GAP 2: INTERNAL_HMAC_SECRET was never validated — silence = undefined = no signing
+  if (!config.hmac.internalSecret || config.hmac.internalSecret.includes('CHANGE_ME')) {
+    errors.push('INTERNAL_HMAC_SECRET is not set — required for inter-service authentication');
+  } else if (!HEX_64.test(config.hmac.internalSecret)) {
+    errors.push('INTERNAL_HMAC_SECRET must be exactly 64 hex characters (256-bit minimum entropy)');
+  }
+
   if (config.env === 'production') {
     if (config.networkMode !== 'MAINNET') {
       errors.push('Production environment MUST use NETWORK_MODE=MAINNET');
@@ -179,13 +186,14 @@ function validateConfig() {
     errors.push('QUEUE_SIGNING_SECRET must be exactly 64 hex characters (256-bit minimum entropy)');
   }
 
-  // T-2/CRYPTO-2: All 5 secrets MUST be distinct from each other.
+  // T-2/CRYPTO-2: All 6 secrets MUST be distinct from each other.
   // Reusing secrets across purposes destroys their cryptographic independence.
   const secrets = {
-    JWT_ACCESS_SECRET: config.jwt.accessSecret,
-    JWT_REFRESH_SECRET: config.jwt.refreshSecret,
-    MASTER_ENCRYPTION_KEY: config.encryption.masterKey,
-    HMAC_SECRET: config.hmac.secret,
+    JWT_ACCESS_SECRET:    config.jwt.accessSecret,
+    JWT_REFRESH_SECRET:   config.jwt.refreshSecret,
+    MASTER_ENCRYPTION_KEY:config.encryption.masterKey,
+    HMAC_SECRET:          config.hmac.secret,
+    INTERNAL_HMAC_SECRET: config.hmac.internalSecret,
     QUEUE_SIGNING_SECRET: config.queue.signingSecret,
   };
   const secretEntries = Object.entries(secrets).filter(([, v]) => v);

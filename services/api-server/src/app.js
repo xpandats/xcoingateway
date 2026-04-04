@@ -247,8 +247,12 @@ app.use(cookieParser());
 // ═══════════════════════════════════════════════════════════════
 // Generates unique request ID for every request.
 // Echoed back in response header for client-side correlation.
+// GAP 7: Validate client-supplied x-request-id is a valid UUID.
+// Reject arbitrary strings that could inject noise/attacks into logs.
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 app.use((req, res, next) => {
-  req.requestId = req.headers['x-request-id'] || randomUUID();
+  const clientId = req.headers['x-request-id'];
+  req.requestId = (clientId && UUID_REGEX.test(clientId)) ? clientId : randomUUID();
   res.setHeader('x-request-id', req.requestId);
   next();
 });

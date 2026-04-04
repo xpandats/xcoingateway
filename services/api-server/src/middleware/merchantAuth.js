@@ -208,11 +208,14 @@ async function merchantAuth(req, res, next) {
     ).catch((err) => logger.error('Failed to update apiKey lastUsedAt', { error: err.message }));
 
     // 7. Attach merchant to request
+    // CRITICAL: include raw ObjectId as _id for downstream DB queries
+    // Controllers must NOT have to cast merchantId string → ObjectId themselves
     req.merchant = {
-      merchantId: merchant._id.toString(),
+      _id:          merchant._id,              // ← Raw Mongoose ObjectId — use in DB queries
+      merchantId:   merchant._id.toString(),   // ← String — use in JSON responses
       businessName: merchant.businessName,
       apiKeyId,
-      permissions: apiKey.permissions,
+      permissions:  apiKey.permissions,
     };
 
     next();
