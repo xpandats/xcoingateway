@@ -1,43 +1,24 @@
 'use strict';
 
 /**
- * @module reconciliation-service/reconciler
+ * @module reconciliation-service/reconciler — FIXED
  *
- * Reconciliation Service — Runs every 15 minutes.
- *
- * WHAT IT DOES:
- *   1. For each active hot wallet: query on-chain USDT balance via TronGrid
- *   2. Compare with internal ledger sum (credits - debits)
- *   3. If mismatch > $0.01 threshold → auto-pause withdrawals + alert
- *   4. Also reconciles: total on-chain received vs total matched invoices
- *
- * WHY IT EXISTS:
- *   Without this, you have no way to detect:
- *     - Missed transactions (listener bug)
- *     - Double-credited deposits (matching engine bug)
- *     - Drained funds (security breach)
- *     - Ledger corruption
- *
- * FAIL SAFE:
- *   Any mismatch → immediately pause all withdrawals + alert admin.
- *   Better to pause and investigate than to allow potentially invalid funds to move.
+ * FIXES:
+ *   1. Balance pause flag now sets a REASON key — admin pause is never auto-cleared
+ *   2. Per-wallet ledger balance (not aggregate cross all wallets)
+ *   3. Auto-clear only when ALL wallets are clean AND the pause was set by reconciler,
+ *      never auto-clear a manually triggered admin pause
  */
 
-const IORedis   = require('ioredis');
 const { Wallet, LedgerEntry } = require('@xcg/database');
 
-const RECONCILE_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
-const MISMATCH_THRESHOLD    = 0.01;             // $0.01 USDT tolerance
-const PAUSE_WITHDRAWALS_KEY = 'xcg:system:withdrawals_paused';
+const RECONCILE_INTERVAL_MS      = 15 * 60 * 1000; // 15 minutes
+const MISMATCH_THRESHOLD         = 0.01;            // $0.01 USDT tolerance
+const PAUSE_WITHDRAWALS_KEY      = 'xcg:system:withdrawals_paused';
+const PAUSE_REASON_KEY           = 'xcg:system:withdrawals_pause_reason';
+const RECONCILER_PAUSE_REASON    = 'reconciliation_mismatch';
 
 class Reconciler {
-  /**
-   * @param {object} opts
-   * @param {object} opts.tronAdapter    - TronAdapter instance
-   * @param {object} opts.redis          - IORedis instance
-   * @param {object} opts.alertPublisher - Queue publisher for SYSTEM_ALERT
-   * @param {object} opts.logger
-   */
   constructor({ tronAdapter, redis, alertPublisher, logger }) {
     this.tronAdapter    = tronAdapter;
     this.redis          = redis;
@@ -71,43 +52,42 @@ class Reconciler {
         .select('_id address label balance')
         .lean();
 
-      let allClear = true;
+      let anyMismatch = false;
 
       for (const wallet of wallets) {
         try {
           const onChainBalance = parseFloat(await this.tronAdapter.getUSDTBalance(wallet.address));
-          const ledgerBalance  = await this._getLedgerBalanceForWallet(wallet._id);
+          // FIX: per-wallet ledger balance (not aggregate across all wallets)
+          const ledgerBalance  = await this._getLedgerBalanceForWallet(String(wallet._id));
 
           const diff = Math.abs(onChainBalance - ledgerBalance);
 
           if (diff > MISMATCH_THRESHOLD) {
-            allClear = false;
+            anyMismatch = true;
             this.logger.error('Reconciler: BALANCE MISMATCH DETECTED', {
-              walletId:        String(wallet._id),
-              address:         wallet.address,
+              walletId:       String(wallet._id),
+              address:        wallet.address,
               onChainBalance,
               ledgerBalance,
               diff,
             });
 
-            // Auto-pause all withdrawals
+            // Auto-pause withdrawals (24h TTL — admin must review)
             await this.redis.set(PAUSE_WITHDRAWALS_KEY, '1', 'EX', 24 * 60 * 60);
+            // Tag the reason so admin auto-clear code knows who set it
+            await this.redis.set(PAUSE_REASON_KEY, RECONCILER_PAUSE_REASON, 'EX', 24 * 60 * 60);
 
-            // Fire alert
             await this._alert('reconciliation_mismatch', {
               walletId:      String(wallet._id),
               address:       wallet.address,
               onChainBalance,
               ledgerBalance,
               diff,
-              message:       `CRITICAL: Ledger mismatch of ${diff.toFixed(6)} USDT on wallet ${wallet.address}. Withdrawals auto-paused.`,
+              message: `CRITICAL: Ledger mismatch of ${diff.toFixed(6)} USDT on wallet ${wallet.address}. Withdrawals auto-paused.`,
             });
           } else {
             this.logger.info('Reconciler: wallet OK', {
-              address: wallet.address,
-              onChainBalance,
-              ledgerBalance,
-              diff,
+              address: wallet.address, onChainBalance, ledgerBalance, diff,
             });
           }
         } catch (err) {
@@ -117,10 +97,17 @@ class Reconciler {
         }
       }
 
-      if (allClear) {
-        // Clear pause flag if all wallets reconcile cleanly
-        await this.redis.del(PAUSE_WITHDRAWALS_KEY);
-        this.logger.info('Reconciler: cycle complete — all wallets balanced');
+      if (!anyMismatch) {
+        // FIX: Only clear pause if it was set by THIS reconciler, not by admin
+        const pauseReason = await this.redis.get(PAUSE_REASON_KEY);
+        if (pauseReason === RECONCILER_PAUSE_REASON) {
+          await this.redis.del(PAUSE_WITHDRAWALS_KEY);
+          await this.redis.del(PAUSE_REASON_KEY);
+          this.logger.info('Reconciler: all wallets balanced — withdrawal pause lifted');
+        } else if (pauseReason) {
+          this.logger.info('Reconciler: all wallets balanced — pause kept (set by admin)');
+        }
+        this.logger.info('Reconciler: cycle complete');
       }
 
     } catch (err) {
@@ -128,21 +115,34 @@ class Reconciler {
     }
   }
 
+  /**
+   * FIX: Compute ledger balance per wallet using invoices linked to that wallet.
+   * Compare on-chain balance against ALL receivable credits minus debits for that wallet's invoices.
+   */
   async _getLedgerBalanceForWallet(walletId) {
-    // Sum all ledger entries: credits - debits for this wallet
-    // Note: LedgerEntry references walletId via withdrawalId → wallet indirectly
-    // For simplicity in MVP: sum all merchant receivable credits - debits
-    // TODO Phase 3: wallet-level ledger reconciliation
+    // Get all invoices for this specific wallet
+    const { Invoice } = require('@xcg/database');
+    const invoiceIds = await Invoice.find({ walletId }).select('_id').lean()
+      .then((list) => list.map((i) => i._id));
+
+    if (invoiceIds.length === 0) return 0;
+
     const result = await LedgerEntry.aggregate([
-      { $match: { account: 'merchant_receivable' } },
+      {
+        $match: {
+          account:   'merchant_receivable',
+          invoiceId: { $in: invoiceIds },
+        },
+      },
       {
         $group: {
-          _id: null,
+          _id:     null,
           credits: { $sum: { $cond: [{ $eq: ['$type', 'credit'] }, '$amount', 0] } },
-          debits:  { $sum: { $cond: [{ $eq: ['$type', 'debit'] },  '$amount', 0] } },
+          debits:  { $sum: { $cond: [{ $eq: ['$type', 'debit'] }, '$amount', 0] } },
         },
       },
     ]);
+
     return result.length ? result[0].credits - result[0].debits : 0;
   }
 

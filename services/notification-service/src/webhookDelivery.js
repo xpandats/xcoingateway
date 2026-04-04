@@ -22,11 +22,12 @@
  *   - Delivery history logged (WebhookDelivery model)
  */
 
-const crypto  = require('crypto');
-const axios   = require('axios');
+const crypto   = require('crypto');
+const axios    = require('axios');
 const { WebhookDelivery, Merchant } = require('@xcg/database');
-// validateOutboundUrl is in the ssrfProtection middleware (server-side, DNS-resolving SSRF check)
-const { validateOutboundUrl } = require('../../middleware/ssrfProtection');
+const { decrypt } = require('@xcg/crypto'); // Decrypt webhook secret before HMAC use
+// SSRF: inline IP check (notification-service has no access to api-server middleware)
+const { validateOutboundUrl } = require('./ssrfCheck');
 
 const DELIVERY_TIMEOUT_MS = 10_000; // 10 seconds
 
@@ -89,9 +90,20 @@ class WebhookDeliveryEngine {
     const payloadStr = JSON.stringify(payload);
     const timestamp  = Math.floor(Date.now() / 1000);
 
-    // HMAC-SHA256 signature: `timestamp.payloadStr`
-    // Same pattern as Stripe — predictable, well-understood format
-    const webhookSecret = merchant.webhookSecret || '';
+    // HMAC-SHA256 signature: `timestamp.payloadStr` (same pattern as Stripe)
+    // CRITICAL: webhookSecret is AES-256-GCM encrypted in DB — must decrypt before HMAC
+    let webhookSecret = '';
+    if (merchant.webhookSecret) {
+      try {
+        webhookSecret = decrypt(merchant.webhookSecret);
+      } catch (err) {
+        this.logger.error('WebhookDelivery: failed to decrypt webhook secret', {
+          merchantId, error: err.message,
+        });
+        return; // Block delivery — cannot sign without valid secret
+      }
+    }
+
     const signature = crypto
       .createHmac('sha256', webhookSecret)
       .update(`${timestamp}.${payloadStr}`)

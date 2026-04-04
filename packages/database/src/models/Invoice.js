@@ -24,7 +24,8 @@ const invoiceSchema = new mongoose.Schema({
   network: { type: String, default: 'tron' },
 
   // Payment details
-  walletAddress: { type: String, required: true, index: true }, // Receiving wallet
+  walletAddress: { type: String, required: true, index: true }, // Receiving wallet TRC20 address
+  walletId:      { type: mongoose.Schema.Types.ObjectId, ref: 'Wallet', default: null, index: true }, // Wallet ref for reconciliation
   description: { type: String, default: '' },
   metadata: { type: mongoose.Schema.Types.Mixed, default: {} }, // Merchant custom data
 
