@@ -53,12 +53,18 @@ try {
 
 
 // ─── Route Imports ───────────────────────────────────────────────────────────
-const authRoutes         = require('./routes/auth');
-const healthRoutes       = require('./routes/health');
-const walletRoutes       = require('./routes/wallets');
-const merchantRoutes     = require('./routes/merchants');
-const adminRoutes        = require('./routes/admin');
-const supportRoutes      = require('./routes/support');
+const authRoutes             = require('./routes/auth');
+const healthRoutes           = require('./routes/health');
+const walletRoutes           = require('./routes/wallets');
+const merchantRoutes         = require('./routes/merchants');
+const adminRoutes            = require('./routes/admin');
+const adminUsersRoutes       = require('./routes/adminUsers');
+const adminSystemRoutes      = require('./routes/adminSystem');
+const adminWebhooksRoutes    = require('./routes/adminWebhooks');
+const adminReconRoutes       = require('./routes/adminReconciliation');
+const supportRoutes          = require('./routes/support');
+const merchantPortalRoutes   = require('./routes/merchantPortal');
+const publicPayRoutes        = require('./routes/publicPay');
 // Factory routes — redisClient injected once at app creation time (NOT per-request)
 const invoiceRouteFactory    = require('./routes/invoices');
 const withdrawalRouteFactory = require('./routes/withdrawals');
@@ -301,10 +307,21 @@ app.use('/api/v1/auth/refresh',  refreshLimiter);
 app.use('/api/v1/auth',             authRoutes);
 app.use('/internal/health',         healthLimiter, healthRoutes);
 
+// ─── Public routes (no auth) ──────────────────────────────────────────────────
+// Public payment page — MUST be before any auth middleware
+app.use('/api/v1/pay',              publicPayRoutes);
+
+// ─── Merchant Portal (JWT-authenticated merchant self-service) ────────────────
+app.use('/api/v1/merchant',         merchantPortalRoutes);
+
 // ─── Admin routes (authenticate + authorize('admin') + IP whitelist inside) ───
 app.use('/admin/wallets',           walletRoutes);
 app.use('/admin/merchants',         merchantRoutes);
-app.use('/admin',                   adminRoutes);   // dashboard, transactions, withdrawals, audit
+app.use('/admin/users',             adminUsersRoutes);
+app.use('/admin/system',            adminSystemRoutes);
+app.use('/admin/webhooks',          adminWebhooksRoutes);
+app.use('/admin/reconciliation',    adminReconRoutes);
+app.use('/admin',                   adminRoutes);   // dashboard, transactions, withdrawals, audit, disputes, fraud
 
 // ─── Support routes (authenticate + authorize('support') + IP whitelist) ─────
 app.use('/support',                 supportRoutes);

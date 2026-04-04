@@ -61,6 +61,15 @@ async function createInvoice(req, res) {
     await validateOutboundUrl(data.callbackUrl);
   }
 
+  // Check invoice creation pause (admin emergency control)
+  const redis = req.app.locals.redis;
+  if (redis) {
+    const paused = await redis.get('xcg:system:invoices_paused');
+    if (paused) {
+      throw AppError.serviceUnavailable('Invoice creation is temporarily paused — system maintenance', 'INVOICE_CREATION_PAUSED');
+    }
+  }
+
   // FRAUD CHECK: velocity limits + amount cap before invoice is created
   // This prevents API abuse (merchants flooding invoice creation)
   getServices(); // Ensure _fraud is initialised
@@ -72,6 +81,8 @@ async function createInvoice(req, res) {
   if (fraudResult.blocked) {
     throw new AppError(429, fraudResult.reason, 'FRAUD_BLOCKED');
   }
+  // Flagged = proceed but it's already logged + alerted by fraud engine
+
   // Flagged = proceed but it's already logged + alerted by fraud engine
 
   const invoice = await getServices().createInvoice(data, req.merchant);
@@ -152,10 +163,58 @@ async function getPaymentStatus(req, res) {
   });
 }
 
+// ─── DELETE /api/v1/payments/:id ─────────────────────────────────────────────
+// Cancel an invoice — only allowed in 'initiated' or 'pending' status.
+
+const CANCELLABLE_STATUSES = new Set([
+  INVOICE_STATUS.INITIATED,
+  INVOICE_STATUS.PENDING,
+]);
+
+async function cancelInvoice(req, res) {
+  const { Invoice } = require('@xcg/database');
+
+  const invoice = await Invoice.findOne({
+    invoiceId:  req.params.id,
+    merchantId: req.merchant._id,
+  });
+
+  if (!invoice) throw AppError.notFound('Invoice not found', 'INVOICE_NOT_FOUND');
+
+  if (invoice.status === INVOICE_STATUS.CANCELLED) {
+    throw AppError.conflict('Invoice is already cancelled', 'INVOICE_ALREADY_CANCELLED');
+  }
+  if (!CANCELLABLE_STATUSES.has(invoice.status)) {
+    throw AppError.conflict(
+      `Invoice cannot be cancelled — current status: ${invoice.status}`,
+      'INVOICE_CANNOT_CANCEL',
+    );
+  }
+
+  invoice.status = INVOICE_STATUS.CANCELLED;
+  await invoice.save();
+
+  logger.info('InvoiceController: invoice cancelled by merchant', {
+    invoiceId:  invoice.invoiceId,
+    merchantId: String(req.merchant._id),
+    ip:         req.ip,
+  });
+
+  res.json({
+    success: true,
+    data: {
+      invoiceId:   invoice.invoiceId,
+      status:      invoice.status,
+      cancelledAt: new Date().toISOString(),
+    },
+  });
+}
+
 module.exports = {
   createInvoice:    asyncHandler(createInvoice),
   getInvoice:       asyncHandler(getInvoice),
   listInvoices:     asyncHandler(listInvoices),
   getPaymentStatus: asyncHandler(getPaymentStatus),
+  cancelInvoice:    asyncHandler(cancelInvoice),
   setPaymentCreatedPublisher,
 };

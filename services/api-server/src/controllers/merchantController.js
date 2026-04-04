@@ -118,13 +118,234 @@ async function rotateWebhookSecret(req, res) {
   res.json({ success: true, data: result });
 }
 
+// ─── Additional Admin Controls ────────────────────────────────────────────────
+
+const mongoose = require('mongoose');
+const { Invoice, Transaction, LedgerEntry, Withdrawal } = require('@xcg/database');
+
+const approvalSchema = Joi.object({
+  action:        Joi.string().valid('approve', 'reject').required(),
+  rejectedReason:Joi.string().max(500).when('action', { is: 'reject', then: Joi.required() }).optional(),
+}).options({ stripUnknown: true });
+
+const feeSchema = Joi.object({
+  feePercentage: Joi.number().min(0).max(100).optional(),
+  fixedFee:      Joi.number().min(0).optional(),
+}).options({ stripUnknown: true });
+
+const limitsSchema = Joi.object({
+  rateLimits: Joi.object({
+    invoicesPerMinute:    Joi.number().integer().min(1).max(1000).optional(),
+    withdrawalsPerMinute: Joi.number().integer().min(1).max(100).optional(),
+    readsPerMinute:       Joi.number().integer().min(1).max(5000).optional(),
+  }).optional(),
+}).options({ stripUnknown: true });
+
+async function approveMerchant(req, res) {
+  const data = validate(approvalSchema, req.body);
+  const merchant = await svc.getMerchant(req.params.id);
+
+  merchant.isApproved     = data.action === 'approve';
+  merchant.approvalStatus = data.action === 'approve' ? 'approved' : 'rejected';
+  merchant.approvedBy     = data.action === 'approve' ? req.user._id : undefined;
+  merchant.approvedAt     = data.action === 'approve' ? new Date() : undefined;
+  merchant.rejectedReason = data.rejectedReason || '';
+  await merchant.save();
+
+  await require('@xcg/database').AuditLog.create({
+    actor:      String(req.user._id),
+    action:     data.action === 'approve' ? 'merchant.approved' : 'merchant.rejected',
+    resource:   'merchant',
+    resourceId: String(merchant._id),
+    ipAddress:  req.ip,
+    outcome:    'success',
+    timestamp:  new Date(),
+    metadata:   { reason: data.rejectedReason },
+  });
+
+  res.json({ success: true, data: { merchant: { _id: merchant._id, approvalStatus: merchant.approvalStatus, isApproved: merchant.isApproved } } });
+}
+
+async function suspendMerchant(req, res) {
+  const { reason } = req.body;
+  if (!reason || !reason.trim()) throw AppError.badRequest('Suspension reason is required');
+
+  const merchant = await svc.getMerchant(req.params.id);
+  merchant.isActive       = false;
+  merchant.approvalStatus = 'suspended';
+  merchant.suspendedAt    = new Date();
+  merchant.suspendedReason= reason.trim();
+  merchant.suspendedBy    = req.user._id;
+  await merchant.save();
+
+  await require('@xcg/database').AuditLog.create({
+    actor:      String(req.user._id),
+    action:     'merchant.suspended',
+    resource:   'merchant',
+    resourceId: String(merchant._id),
+    ipAddress:  req.ip,
+    outcome:    'success',
+    timestamp:  new Date(),
+    metadata:   { reason },
+  });
+
+  res.json({ success: true, message: `Merchant suspended. All payments and withdrawals for this merchant are now blocked.` });
+}
+
+async function getMerchantTransactions(req, res) {
+  const { page = 1, limit = 20 } = req.query;
+  const merchant = await svc.getMerchant(req.params.id);
+
+  const [transactions, total] = await Promise.all([
+    Transaction.find({ merchantId: merchant._id })
+      .sort({ createdAt: -1 })
+      .skip((Number(page) - 1) * Number(limit))
+      .limit(Number(limit))
+      .lean(),
+    Transaction.countDocuments({ merchantId: merchant._id }),
+  ]);
+
+  res.json({ success: true, data: { transactions, pagination: { page: Number(page), limit: Number(limit), total } } });
+}
+
+async function getMerchantLedger(req, res) {
+  const { page = 1, limit = 20 } = req.query;
+  const merchant = await svc.getMerchant(req.params.id);
+
+  const [entries, total] = await Promise.all([
+    LedgerEntry.find({ merchantId: merchant._id })
+      .sort({ createdAt: -1 })
+      .skip((Number(page) - 1) * Number(limit))
+      .limit(Number(limit))
+      .lean(),
+    LedgerEntry.countDocuments({ merchantId: merchant._id }),
+  ]);
+
+  res.json({ success: true, data: { entries, pagination: { page: Number(page), limit: Number(limit), total } } });
+}
+
+async function getMerchantInvoices(req, res) {
+  const { page = 1, limit = 20, status } = req.query;
+  const merchant = await svc.getMerchant(req.params.id);
+
+  const filter = { merchantId: merchant._id };
+  if (status) filter.status = status;
+
+  const [invoices, total] = await Promise.all([
+    Invoice.find(filter)
+      .select('-amountOffset -__v')
+      .sort({ createdAt: -1 })
+      .skip((Number(page) - 1) * Number(limit))
+      .limit(Number(limit))
+      .lean(),
+    Invoice.countDocuments(filter),
+  ]);
+
+  res.json({ success: true, data: { invoices, pagination: { page: Number(page), limit: Number(limit), total } } });
+}
+
+async function getMerchantStats(req, res) {
+  const merchant = await svc.getMerchant(req.params.id);
+  const now      = new Date();
+  const last30d  = new Date(now - 30 * 86_400_000);
+
+  const [volume, successCount, totalInvoices, balance, fees30d] = await Promise.all([
+    Transaction.aggregate([
+      { $match: { merchantId: merchant._id, status: 'confirmed' } },
+      { $group: { _id: null, total: { $sum: '$amount' } } },
+    ]).then((r) => r[0]?.total || 0),
+    Invoice.countDocuments({ merchantId: merchant._id, status: { $in: ['confirmed', 'success'] } }),
+    Invoice.countDocuments({ merchantId: merchant._id }),
+    LedgerEntry.aggregate([
+      { $match: { merchantId: merchant._id, account: 'merchant_receivable' } },
+      { $group: { _id: null, credits: { $sum: { $cond: [{ $eq: ['$type', 'credit'] }, '$amount', 0] } }, debits: { $sum: { $cond: [{ $eq: ['$type', 'debit'] }, '$amount', 0] } } } },
+    ]).then((r) => r[0] ? r[0].credits - r[0].debits : 0),
+    LedgerEntry.aggregate([
+      { $match: { merchantId: merchant._id, account: 'platform_fee', type: 'credit', createdAt: { $gte: last30d } } },
+      { $group: { _id: null, total: { $sum: '$amount' } } },
+    ]).then((r) => r[0]?.total || 0),
+  ]);
+
+  res.json({
+    success: true,
+    data: {
+      stats: {
+        totalVolumeUsdt:  parseFloat(volume.toFixed(6)),
+        balanceAvailable: parseFloat(balance.toFixed(6)),
+        successfulInvoices: successCount,
+        totalInvoices,
+        successRate:      totalInvoices > 0 ? parseFloat(((successCount / totalInvoices) * 100).toFixed(2)) : 0,
+        fees30dUsdt:      parseFloat(fees30d.toFixed(6)),
+        feePercentage:    merchant.feePercentage,
+        fixedFee:         merchant.fixedFee,
+      },
+    },
+  });
+}
+
+async function setMerchantFees(req, res) {
+  const data = validate(feeSchema, req.body);
+  const merchant = await svc.getMerchant(req.params.id);
+
+  const prev = { feePercentage: merchant.feePercentage, fixedFee: merchant.fixedFee };
+  if (data.feePercentage !== undefined) merchant.feePercentage = data.feePercentage;
+  if (data.fixedFee !== undefined)      merchant.fixedFee      = data.fixedFee;
+  await merchant.save();
+
+  await require('@xcg/database').AuditLog.create({
+    actor:      String(req.user._id),
+    action:     'merchant.fees_updated',
+    resource:   'merchant',
+    resourceId: String(merchant._id),
+    ipAddress:  req.ip,
+    outcome:    'success',
+    timestamp:  new Date(),
+    metadata:   { prev, new: data },
+  });
+
+  res.json({ success: true, data: { feePercentage: merchant.feePercentage, fixedFee: merchant.fixedFee } });
+}
+
+async function setMerchantLimits(req, res) {
+  const data = validate(limitsSchema, req.body);
+  const merchant = await svc.getMerchant(req.params.id);
+
+  if (data.rateLimits) {
+    Object.assign(merchant.rateLimits, data.rateLimits);
+    merchant.markModified('rateLimits');
+  }
+  await merchant.save();
+
+  await require('@xcg/database').AuditLog.create({
+    actor:      String(req.user._id),
+    action:     'merchant.limits_updated',
+    resource:   'merchant',
+    resourceId: String(merchant._id),
+    ipAddress:  req.ip,
+    outcome:    'success',
+    timestamp:  new Date(),
+    metadata:   { rateLimits: data.rateLimits },
+  });
+
+  res.json({ success: true, data: { rateLimits: merchant.rateLimits } });
+}
+
 module.exports = {
-  createMerchant:       asyncHandler(createMerchant),
-  listMerchants:        asyncHandler(listMerchants),
-  getMerchant:          asyncHandler(getMerchant),
-  updateMerchant:       asyncHandler(updateMerchant),
-  setMerchantStatus:    asyncHandler(setMerchantStatus),
-  createApiKey:         asyncHandler(createApiKey),
-  revokeApiKey:         asyncHandler(revokeApiKey),
-  rotateWebhookSecret:  asyncHandler(rotateWebhookSecret),
+  createMerchant:           asyncHandler(createMerchant),
+  listMerchants:            asyncHandler(listMerchants),
+  getMerchant:              asyncHandler(getMerchant),
+  updateMerchant:           asyncHandler(updateMerchant),
+  setMerchantStatus:        asyncHandler(setMerchantStatus),
+  createApiKey:             asyncHandler(createApiKey),
+  revokeApiKey:             asyncHandler(revokeApiKey),
+  rotateWebhookSecret:      asyncHandler(rotateWebhookSecret),
+  // Expanded admin controls
+  approveMerchant:          asyncHandler(approveMerchant),
+  suspendMerchant:          asyncHandler(suspendMerchant),
+  getMerchantTransactions:  asyncHandler(getMerchantTransactions),
+  getMerchantLedger:        asyncHandler(getMerchantLedger),
+  getMerchantInvoices:      asyncHandler(getMerchantInvoices),
+  getMerchantStats:         asyncHandler(getMerchantStats),
+  setMerchantFees:          asyncHandler(setMerchantFees),
+  setMerchantLimits:        asyncHandler(setMerchantLimits),
 };

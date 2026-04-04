@@ -14,6 +14,7 @@ const Dispute           = require('./src/models/Dispute');
 const AuditLog          = require('./src/models/AuditLog');
 const WebhookDelivery   = require('./src/models/WebhookDelivery');
 const SystemConfig      = require('./src/models/SystemConfig');
+const ReconciliationReport = require('./src/models/ReconciliationReport');
 const RefreshToken      = require('./src/models/RefreshToken');
 const UsedTotpCode      = require('./src/models/UsedTotpCode');
 const UsedNonce         = require('./src/models/UsedNonce');
@@ -35,6 +36,7 @@ module.exports = {
   AuditLog,
   WebhookDelivery,
   SystemConfig,
+  ReconciliationReport,
   RefreshToken,
   UsedTotpCode,
   UsedNonce,

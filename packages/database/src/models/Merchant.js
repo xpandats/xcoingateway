@@ -8,6 +8,23 @@ const merchantSchema = new mongoose.Schema({
   email: { type: String, default: '', trim: true, lowercase: true },  // Contact email
   isActive: { type: Boolean, default: true, index: true },
 
+  // Approval workflow — merchants must be approved by admin before accepting payments
+  isApproved:      { type: Boolean, default: false, index: true },
+  approvalStatus:  { type: String, enum: ['pending', 'approved', 'rejected', 'suspended'], default: 'pending', index: true },
+  approvedBy:      { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  approvedAt:      { type: Date, default: null },
+  rejectedReason:  { type: String, default: '' },
+  suspendedAt:     { type: Date, default: null },
+  suspendedReason: { type: String, default: '' },
+  suspendedBy:     { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+
+  // Per-merchant rate limits (admin-configurable, overrides platform defaults)
+  rateLimits: {
+    invoicesPerMinute:     { type: Number, default: 20 },
+    withdrawalsPerMinute:  { type: Number, default: 10 },
+    readsPerMinute:        { type: Number, default: 100 },
+  },
+
   // API credentials
   apiKeys: [{
     keyId: { type: String, required: true },  // Public identifier (indexed via schema.index)
