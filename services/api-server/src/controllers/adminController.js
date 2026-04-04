@@ -331,18 +331,37 @@ async function resumeWithdrawals(req, res) {
 
 // ─── Transaction & Invoice Detail ─────────────────────────────────────────────
 
+const { isValidObjectId } = require('mongoose');
+
+// Normalise actorId (authenticate sets req.user.userId, not _id)
+const actorId = (req) => req.user.userId || String(req.user._id);
+
+// Joi schema for list pagination (prevents NaN from garbage query params)
+const listSchema = Joi.object({
+  page:       Joi.number().integer().min(1).default(1),
+  limit:      Joi.number().integer().min(1).max(100).default(20),
+  status:     Joi.string().optional(),
+  merchantId: Joi.string().hex().length(24).optional(),
+}).options({ stripUnknown: true });
+
 async function getTransactionDetail(req, res) {
+  // H2 FIX: Validate ObjectId before DB query to prevent CastError leaking schema info
+  if (!isValidObjectId(req.params.id)) {
+    throw AppError.notFound('Transaction not found');
+  }
+
   const tx = await Transaction.findById(req.params.id)
     .populate('matchedInvoiceId', 'invoiceId baseAmount uniqueAmount status merchantId')
     .lean();
 
-  if (!tx) throw AppError.notFound('Transaction not found', 'TX_NOT_FOUND');
+  if (!tx) throw AppError.notFound('Transaction not found');
 
   res.json({ success: true, data: { transaction: tx } });
 }
 
 async function listAllInvoices(req, res) {
-  const { page = 1, limit = 20, status, merchantId } = req.query;
+  // M2 FIX: Use Joi validation to prevent NaN from garbage query params
+  const { page, limit, status, merchantId } = validate(listSchema, req.query);
   const filter = {};
   if (status)     filter.status     = status;
   if (merchantId) filter.merchantId = merchantId;
@@ -350,24 +369,32 @@ async function listAllInvoices(req, res) {
   const [invoices, total] = await Promise.all([
     Invoice.find(filter)
       .sort({ createdAt: -1 })
-      .skip((Number(page) - 1) * Number(limit))
-      .limit(Number(limit))
+      .skip((page - 1) * limit)
+      .limit(limit)
       .lean(),
     Invoice.countDocuments(filter),
   ]);
 
   res.json({
     success: true,
-    data: { invoices, pagination: { page: Number(page), limit: Number(limit), total, pages: Math.ceil(total / Number(limit)) } },
+    data: { invoices, pagination: { page, limit, total, pages: Math.ceil(total / limit) } },
   });
 }
 
 async function getInvoiceDetail(req, res) {
-  const invoice = await Invoice.findOne({ invoiceId: req.params.id })
+  // H2 FIX: Accept both ObjectId and invoiceId string format
+  let filter;
+  if (isValidObjectId(req.params.id)) {
+    filter = { $or: [{ _id: req.params.id }, { invoiceId: req.params.id }] };
+  } else {
+    filter = { invoiceId: req.params.id };
+  }
+
+  const invoice = await Invoice.findOne(filter)
     .populate('merchantId', 'businessName email')
     .lean();
 
-  if (!invoice) throw AppError.notFound('Invoice not found', 'INVOICE_NOT_FOUND');
+  if (!invoice) throw AppError.notFound('Invoice not found');
 
   res.json({ success: true, data: { invoice } });
 }
@@ -375,8 +402,16 @@ async function getInvoiceDetail(req, res) {
 const CANCELLABLE_BY_ADMIN = new Set(['initiated', 'pending', 'hash_found']);
 
 async function adminCancelInvoice(req, res) {
-  const invoice = await Invoice.findOne({ invoiceId: req.params.id });
-  if (!invoice) throw AppError.notFound('Invoice not found', 'INVOICE_NOT_FOUND');
+  // Use validated invoice lookup (same as getInvoiceDetail)
+  let filter;
+  if (isValidObjectId(req.params.id)) {
+    filter = { $or: [{ _id: req.params.id }, { invoiceId: req.params.id }] };
+  } else {
+    filter = { invoiceId: req.params.id };
+  }
+
+  const invoice = await Invoice.findOne(filter);
+  if (!invoice) throw AppError.notFound('Invoice not found');
 
   if (invoice.status === 'cancelled') {
     throw AppError.conflict('Invoice already cancelled', 'INVOICE_ALREADY_CANCELLED');
@@ -389,7 +424,7 @@ async function adminCancelInvoice(req, res) {
   await invoice.save();
 
   await AuditLog.create({
-    actor:      String(req.user._id),
+    actor:      actorId(req),
     action:     'invoice.admin_cancelled',
     resource:   'invoice',
     resourceId: String(invoice._id),

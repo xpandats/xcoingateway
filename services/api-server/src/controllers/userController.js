@@ -22,12 +22,25 @@
 
 const Joi      = require('joi');
 const bcrypt   = require('bcrypt');
+const mongoose = require('mongoose');  // MUST be at top — used in forceLogout
 const { validate, AppError, ErrorCodes } = require('@xcg/common');
 const { User, AuditLog, RefreshToken } = require('@xcg/database');
 const asyncHandler = require('../utils/asyncHandler');
 const { config }   = require('../config');
 const logger = require('@xcg/logger').createLogger('user-ctrl');
 const crypto = require('crypto');
+
+// Helper: safe regex escape to prevent ReDoS via search param
+function escapeRegex(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Helper: validate MongoDB ObjectId format before querying
+function assertValidObjectId(id, label = 'id') {
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    throw AppError.badRequest(`Invalid ${label} format`);
+  }
+}
 
 // ─── Validation ──────────────────────────────────────────────────────────────
 
@@ -56,14 +69,19 @@ const paginationSchema = Joi.object({
   search: Joi.string().trim().max(100).optional(),
 }).options({ stripUnknown: true });
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
+// Helper: strip sensitive fields before API response
 function safeUser(user) {
   const obj = user.toObject ? user.toObject() : { ...user };
   delete obj.passwordHash;
   delete obj.twoFactorSecret;
+  delete obj.passwordHistory;
   delete obj.__v;
   return obj;
+}
+
+// Helper: extract actorId from req.user (authenticate sets userId, not _id)
+function actorId(req) {
+  return req.user.userId || String(req.user._id);
 }
 
 // ─── Handlers ────────────────────────────────────────────────────────────────
@@ -73,7 +91,8 @@ async function listUsers(req, res) {
 
   const filter = { isActive: { $ne: false } };
   if (role)   filter.role   = role;
-  if (search) filter.email  = { $regex: search, $options: 'i' };
+  // H1 FIX: Escape regex to prevent ReDoS
+  if (search) filter.email  = { $regex: escapeRegex(search), $options: 'i' };
 
   const [users, total] = await Promise.all([
     User.find(filter)
@@ -92,6 +111,7 @@ async function listUsers(req, res) {
 }
 
 async function getUser(req, res) {
+  assertValidObjectId(req.params.id, 'userId');
   const user = await User.findById(req.params.id)
     .select('-passwordHash -twoFactorSecret -__v')
     .lean();
@@ -124,7 +144,7 @@ async function createUser(req, res) {
   });
 
   await AuditLog.create({
-    actor:      String(req.user._id),
+    actor:      actorId(req),
     action:     'user.created',
     resource:   'user',
     resourceId: String(newUser._id),
@@ -135,7 +155,7 @@ async function createUser(req, res) {
   });
 
   logger.info('UserCtrl: user created', {
-    adminId: String(req.user._id),
+    adminId: actorId(req),
     newUserId: String(newUser._id),
     role: data.role,
   });
@@ -149,6 +169,7 @@ async function createUser(req, res) {
 async function updateUser(req, res) {
   const data = validate(updateUserSchema, req.body);
 
+  assertValidObjectId(req.params.id, 'userId');
   const user = await User.findById(req.params.id);
   if (!user) throw AppError.notFound('User not found', ErrorCodes.USER_NOT_FOUND);
 
@@ -166,7 +187,7 @@ async function updateUser(req, res) {
   await user.save();
 
   await AuditLog.create({
-    actor:      String(req.user._id),
+    actor:      actorId(req),
     action:     'user.updated',
     resource:   'user',
     resourceId: String(user._id),
@@ -182,6 +203,7 @@ async function updateUser(req, res) {
 async function changeUserRole(req, res) {
   const { role } = validate(changeRoleSchema, req.body);
 
+  assertValidObjectId(req.params.id, 'userId');
   const user = await User.findById(req.params.id);
   if (!user) throw AppError.notFound('User not found', ErrorCodes.USER_NOT_FOUND);
 
@@ -189,8 +211,8 @@ async function changeUserRole(req, res) {
   if (user.role === 'super_admin') {
     throw AppError.forbidden('Cannot modify a super_admin role', ErrorCodes.USER_CANNOT_MODIFY_SUPER_ADMIN);
   }
-  // Cannot target self (would lock out TOTP-validated admin)
-  if (String(user._id) === String(req.user._id)) {
+  // Cannot target self
+  if (String(user._id) === actorId(req)) {
     throw AppError.forbidden('Cannot change your own role');
   }
 
@@ -198,8 +220,11 @@ async function changeUserRole(req, res) {
   user.role = role;
   await user.save();
 
+  // Role change immediately revokes all sessions — force re-login with new permissions
+  await RefreshToken.deleteMany({ userId: user._id });
+
   await AuditLog.create({
-    actor:      String(req.user._id),
+    actor:      actorId(req),
     action:     'user.role_changed',
     resource:   'user',
     resourceId: String(user._id),
@@ -210,62 +235,63 @@ async function changeUserRole(req, res) {
   });
 
   logger.warn('UserCtrl: user role changed', {
-    adminId:   String(req.user._id),
+    adminId:   actorId(req),
     userId:    String(user._id),
     from:      previousRole,
     to:        role,
   });
 
-  res.json({ success: true, data: { user: safeUser(user), previousRole, newRole: role } });
+  res.json({ success: true, data: { user: safeUser(user), previousRole, newRole: role, sessionsRevoked: true } });
 }
 
 async function lockUser(req, res) {
+  assertValidObjectId(req.params.id, 'userId');
   const user = await User.findById(req.params.id);
   if (!user) throw AppError.notFound('User not found', ErrorCodes.USER_NOT_FOUND);
 
   if (user.role === 'super_admin') {
     throw AppError.forbidden('Cannot lock a super_admin account', ErrorCodes.USER_CANNOT_MODIFY_SUPER_ADMIN);
   }
-  if (String(user._id) === String(req.user._id)) {
+  if (String(user._id) === actorId(req)) {
     throw AppError.forbidden('Cannot lock your own account');
   }
 
-  user.isLocked       = true;
-  user.lockedAt       = new Date();
-  user.lockedReason   = req.body.reason || 'Admin action';
-  user.loginAttempts  = 0;
+  // C3 FIX: User model uses failedLoginAttempts not loginAttempts
+  // Set lockUntil to far future (effectively permanent lock until admin unlocks)
+  user.failedLoginAttempts = 0;
+  user.lockUntil           = new Date(Date.now() + 100 * 365 * 24 * 60 * 60 * 1000); // 100 years
   await user.save();
 
   // Revoke all sessions
   await RefreshToken.deleteMany({ userId: user._id });
 
   await AuditLog.create({
-    actor:      String(req.user._id),
+    actor:      actorId(req),
     action:     'user.locked',
     resource:   'user',
     resourceId: String(user._id),
     ipAddress:  req.ip,
     outcome:    'success',
     timestamp:  new Date(),
-    metadata:   { reason: user.lockedReason },
+    metadata:   { reason: req.body?.reason || 'Admin action' },
   });
 
   res.json({ success: true, message: 'User account locked. All active sessions revoked.' });
 }
 
 async function unlockUser(req, res) {
+  assertValidObjectId(req.params.id, 'userId');
   const user = await User.findById(req.params.id);
   if (!user) throw AppError.notFound('User not found', ErrorCodes.USER_NOT_FOUND);
 
-  user.isLocked      = false;
-  user.lockedAt      = null;
-  user.lockedReason  = '';
-  user.loginAttempts = 0;
-  user.lockUntil     = null;
+  // C3 FIX: Clear lockUntil (the actual lock mechanism in User model)
+  user.failedLoginAttempts = 0;
+  user.totpFailedAttempts  = 0;
+  user.lockUntil           = null;
   await user.save();
 
   await AuditLog.create({
-    actor:      String(req.user._id),
+    actor:      actorId(req),
     action:     'user.unlocked',
     resource:   'user',
     resourceId: String(user._id),
@@ -278,26 +304,27 @@ async function unlockUser(req, res) {
 }
 
 async function deactivateUser(req, res) {
+  assertValidObjectId(req.params.id, 'userId');
   const user = await User.findById(req.params.id);
   if (!user) throw AppError.notFound('User not found', ErrorCodes.USER_NOT_FOUND);
 
   if (user.role === 'super_admin') {
     throw AppError.forbidden('Cannot deactivate a super_admin account', ErrorCodes.USER_CANNOT_MODIFY_SUPER_ADMIN);
   }
-  if (String(user._id) === String(req.user._id)) {
+  if (String(user._id) === actorId(req)) {
     throw AppError.forbidden('Cannot deactivate your own account', ErrorCodes.USER_CANNOT_DELETE_SELF);
   }
 
-  user.isActive    = false;
-  user.deactivatedAt = new Date();
-  user.deactivatedBy = req.user._id;
+  // C3 FIX: User model uses standard isActive — set lockUntil too so any cached tokens also fail
+  user.isActive  = false;
+  user.lockUntil = new Date(Date.now() + 100 * 365 * 24 * 60 * 60 * 1000);
   await user.save();
 
   // Revoke all sessions
   await RefreshToken.deleteMany({ userId: user._id });
 
   await AuditLog.create({
-    actor:      String(req.user._id),
+    actor:      actorId(req),
     action:     'user.deactivated',
     resource:   'user',
     resourceId: String(user._id),
@@ -308,7 +335,7 @@ async function deactivateUser(req, res) {
   });
 
   logger.warn('UserCtrl: user deactivated', {
-    adminId: String(req.user._id),
+    adminId: actorId(req),
     userId:  String(user._id),
     email:   user.email,
   });
@@ -317,13 +344,15 @@ async function deactivateUser(req, res) {
 }
 
 async function forceLogout(req, res) {
+  // C1 FIX: ObjectId validation before DB query (mongoose was previously required after module.exports)
+  assertValidObjectId(req.params.id, 'userId');
   const user = await User.findById(req.params.id).lean();
   if (!user) throw AppError.notFound('User not found', ErrorCodes.USER_NOT_FOUND);
 
   const result = await RefreshToken.deleteMany({ userId: new mongoose.Types.ObjectId(req.params.id) });
 
   await AuditLog.create({
-    actor:      String(req.user._id),
+    actor:      actorId(req),
     action:     'user.force_logout',
     resource:   'user',
     resourceId: String(user._id),
@@ -342,8 +371,7 @@ async function forceLogout(req, res) {
   });
 }
 
-// Need mongoose for ObjectId in forceLogout
-const mongoose = require('mongoose');
+// C1 FIX: mongoose is now required at TOP of file (line 25)
 
 module.exports = {
   listUsers:      asyncHandler(listUsers),

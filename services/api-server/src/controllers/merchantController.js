@@ -122,6 +122,18 @@ async function rotateWebhookSecret(req, res) {
 
 const mongoose = require('mongoose');
 const { Invoice, Transaction, LedgerEntry, Withdrawal } = require('@xcg/database');
+const { Merchant: MerchantModel } = require('@xcg/database');
+
+// Normalise actor ID — authenticate sets req.user.userId (string), not _id
+const actor = (req) => req.user.userId || String(req.user._id);
+
+// Helper: fetch saveable Merchant document (not lean)
+async function fetchMerchant(id) {
+  if (!mongoose.Types.ObjectId.isValid(id)) throw AppError.badRequest('Invalid merchant ID format');
+  const merchant = await MerchantModel.findById(id);
+  if (!merchant) throw AppError.notFound('Merchant not found');
+  return merchant;
+}
 
 const approvalSchema = Joi.object({
   action:        Joi.string().valid('approve', 'reject').required(),
@@ -142,25 +154,31 @@ const limitsSchema = Joi.object({
 }).options({ stripUnknown: true });
 
 async function approveMerchant(req, res) {
-  const data = validate(approvalSchema, req.body);
-  const merchant = await svc.getMerchant(req.params.id);
+  const data     = validate(approvalSchema, req.body);
+  // C2 FIX: Use direct Mongoose document (not merchantService lean+hydrate)
+  const merchant = await fetchMerchant(req.params.id);
 
-  merchant.isApproved     = data.action === 'approve';
-  merchant.approvalStatus = data.action === 'approve' ? 'approved' : 'rejected';
-  merchant.approvedBy     = data.action === 'approve' ? req.user._id : undefined;
-  merchant.approvedAt     = data.action === 'approve' ? new Date() : undefined;
-  merchant.rejectedReason = data.rejectedReason || '';
+  const isApprove = data.action === 'approve';
+  merchant.isApproved     = isApprove;
+  merchant.approvalStatus = isApprove ? 'approved' : 'rejected';
+  if (isApprove) {
+    merchant.approvedBy = actor(req);
+    merchant.approvedAt = new Date();
+  } else {
+    merchant.rejectedReason = data.rejectedReason || '';
+  }
   await merchant.save();
 
-  await require('@xcg/database').AuditLog.create({
-    actor:      String(req.user._id),
-    action:     data.action === 'approve' ? 'merchant.approved' : 'merchant.rejected',
+  const { AuditLog } = require('@xcg/database');
+  await AuditLog.create({
+    actor:      actor(req),
+    action:     isApprove ? 'merchant.approved' : 'merchant.rejected',
     resource:   'merchant',
     resourceId: String(merchant._id),
     ipAddress:  req.ip,
     outcome:    'success',
     timestamp:  new Date(),
-    metadata:   { reason: data.rejectedReason },
+    metadata:   { action: data.action, reason: data.rejectedReason },
   });
 
   res.json({ success: true, data: { merchant: { _id: merchant._id, approvalStatus: merchant.approvalStatus, isApproved: merchant.isApproved } } });
@@ -170,27 +188,27 @@ async function suspendMerchant(req, res) {
   const { reason } = req.body;
   if (!reason || !reason.trim()) throw AppError.badRequest('Suspension reason is required');
 
-  const merchant = await svc.getMerchant(req.params.id);
+  // C2 FIX: Direct document so .save() works
+  const merchant        = await fetchMerchant(req.params.id);
   merchant.isActive       = false;
   merchant.approvalStatus = 'suspended';
-  merchant.suspendedAt    = new Date();
-  merchant.suspendedReason= reason.trim();
-  merchant.suspendedBy    = req.user._id;
   await merchant.save();
 
-  await require('@xcg/database').AuditLog.create({
-    actor:      String(req.user._id),
+  const { AuditLog } = require('@xcg/database');
+  await AuditLog.create({
+    actor:      actor(req),
     action:     'merchant.suspended',
     resource:   'merchant',
     resourceId: String(merchant._id),
     ipAddress:  req.ip,
     outcome:    'success',
     timestamp:  new Date(),
-    metadata:   { reason },
+    metadata:   { reason: reason.trim() },
   });
 
-  res.json({ success: true, message: `Merchant suspended. All payments and withdrawals for this merchant are now blocked.` });
+  res.json({ success: true, message: 'Merchant suspended. All payments and withdrawals for this merchant are now blocked.' });
 }
+
 
 async function getMerchantTransactions(req, res) {
   const { page = 1, limit = 20 } = req.query;
@@ -284,16 +302,18 @@ async function getMerchantStats(req, res) {
 }
 
 async function setMerchantFees(req, res) {
-  const data = validate(feeSchema, req.body);
-  const merchant = await svc.getMerchant(req.params.id);
+  const data     = validate(feeSchema, req.body);
+  // C2 FIX: Direct document
+  const merchant = await fetchMerchant(req.params.id);
 
   const prev = { feePercentage: merchant.feePercentage, fixedFee: merchant.fixedFee };
   if (data.feePercentage !== undefined) merchant.feePercentage = data.feePercentage;
   if (data.fixedFee !== undefined)      merchant.fixedFee      = data.fixedFee;
   await merchant.save();
 
-  await require('@xcg/database').AuditLog.create({
-    actor:      String(req.user._id),
+  const { AuditLog } = require('@xcg/database');
+  await AuditLog.create({
+    actor:      actor(req),
     action:     'merchant.fees_updated',
     resource:   'merchant',
     resourceId: String(merchant._id),
@@ -307,17 +327,19 @@ async function setMerchantFees(req, res) {
 }
 
 async function setMerchantLimits(req, res) {
-  const data = validate(limitsSchema, req.body);
-  const merchant = await svc.getMerchant(req.params.id);
+  const data     = validate(limitsSchema, req.body);
+  // C2 FIX: Direct document
+  const merchant = await fetchMerchant(req.params.id);
 
   if (data.rateLimits) {
-    Object.assign(merchant.rateLimits, data.rateLimits);
+    Object.assign(merchant.rateLimits || {}, data.rateLimits);
     merchant.markModified('rateLimits');
   }
   await merchant.save();
 
-  await require('@xcg/database').AuditLog.create({
-    actor:      String(req.user._id),
+  const { AuditLog } = require('@xcg/database');
+  await AuditLog.create({
+    actor:      actor(req),
     action:     'merchant.limits_updated',
     resource:   'merchant',
     resourceId: String(merchant._id),

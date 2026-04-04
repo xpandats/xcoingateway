@@ -102,7 +102,7 @@ async function triggerReconciliation(req, res) {
   const reportId = `recon_${uuidv4().replace(/-/g, '')}`;
   const report   = await ReconciliationReport.create({
     reportId,
-    triggeredBy: String(req.user._id),
+    triggeredBy: req.user.userId || String(req.user._id),
     startedAt:   new Date(),
     status:      'running',
   });
@@ -112,13 +112,13 @@ async function triggerReconciliation(req, res) {
   if (redis) {
     await redis.publish('xcg:reconciliation:trigger', JSON.stringify({
       reportId,
-      triggeredBy: String(req.user._id),
+      triggeredBy: req.user.userId || String(req.user._id),
       manual:      true,
     }));
   }
 
   await AuditLog.create({
-    actor:      String(req.user._id),
+    actor:      req.user.userId || String(req.user._id),
     action:     'reconciliation.triggered',
     resource:   'reconciliation',
     resourceId: reportId,
@@ -130,7 +130,7 @@ async function triggerReconciliation(req, res) {
 
   logger.info('ReconCtrl: manual reconciliation triggered', {
     reportId,
-    adminId: String(req.user._id),
+    adminId: req.user.userId || String(req.user._id),
   });
 
   res.status(202).json({
@@ -160,7 +160,7 @@ async function resolveReport(req, res) {
   await report.save();
 
   await AuditLog.create({
-    actor:      String(req.user._id),
+    actor:      req.user.userId || String(req.user._id),
     action:     'reconciliation.mismatch_resolved',
     resource:   'reconciliation',
     resourceId: report.reportId,

@@ -158,7 +158,7 @@ async function updateProfile(req, res) {
     data.withdrawalAddressVerified = false;
     logger.warn('MerchantPortal: withdrawal address changed — re-verification required', {
       merchantId: String(merchant._id),
-      userId:     String(req.user._id),
+      userId:     req.user.userId || String(req.user._id),
       newAddress: data.withdrawalAddress,
     });
   }
@@ -167,7 +167,7 @@ async function updateProfile(req, res) {
   await merchant.save();
 
   await AuditLog.create({
-    actor:      String(req.user._id),
+    actor:      req.user.userId || String(req.user._id),
     action:     'merchant.profile_updated',
     resource:   'merchant',
     resourceId: String(merchant._id),
@@ -233,7 +233,7 @@ async function createApiKey(req, res) {
   await merchant.save();
 
   await AuditLog.create({
-    actor:      String(req.user._id),
+    actor:      req.user.userId || String(req.user._id),
     action:     'merchant.apikey_created',
     resource:   'merchant',
     resourceId: String(merchant._id),
@@ -275,7 +275,7 @@ async function revokeApiKey(req, res) {
   await merchant.save();
 
   await AuditLog.create({
-    actor:      String(req.user._id),
+    actor:      req.user.userId || String(req.user._id),
     action:     'merchant.apikey_revoked',
     resource:   'merchant',
     resourceId: String(merchant._id),
@@ -325,7 +325,7 @@ async function updateWebhookConfig(req, res) {
   await merchant.save();
 
   await AuditLog.create({
-    actor:      String(req.user._id),
+    actor:      req.user.userId || String(req.user._id),
     action:     'merchant.webhook_updated',
     resource:   'merchant',
     resourceId: String(merchant._id),
@@ -415,7 +415,7 @@ async function rotateWebhookSecret(req, res) {
   await merchant.save();
 
   await AuditLog.create({
-    actor:      String(req.user._id),
+    actor:      req.user.userId || String(req.user._id),
     action:     'merchant.webhook_secret_rotated',
     resource:   'merchant',
     resourceId: String(merchant._id),
@@ -680,7 +680,7 @@ async function openDispute(req, res) {
   });
 
   await AuditLog.create({
-    actor:      String(req.user._id),
+    actor:      req.user.userId || String(req.user._id),
     action:     'dispute.opened',
     resource:   'dispute',
     resourceId: String(dispute._id),
@@ -716,7 +716,7 @@ async function respondToDispute(req, res) {
   await dispute.save();
 
   await AuditLog.create({
-    actor:      String(req.user._id),
+    actor:      req.user.userId || String(req.user._id),
     action:     'dispute.merchant_responded',
     resource:   'dispute',
     resourceId: String(dispute._id),

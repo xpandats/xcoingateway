@@ -114,14 +114,14 @@ async function retryDelivery(req, res) {
     );
   }
 
-  // Reset for retry (notification service will pick it up)
+  // M3 FIX: Floor to 0 (never negative if somehow attempts was already 0)
   delivery.status       = 'pending';
   delivery.nextRetryAt  = new Date(); // Immediate retry
-  delivery.attempts     = Math.max(0, delivery.attempts - 1); // Give one more attempt
+  delivery.attempts     = Math.max(0, (delivery.attempts || 0) - 1);
   await delivery.save();
 
   await AuditLog.create({
-    actor:      String(req.user._id),
+    actor:      req.user.userId || String(req.user._id),
     action:     'webhook.delivery_retried',
     resource:   'webhook_delivery',
     resourceId: String(delivery._id),

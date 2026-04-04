@@ -102,7 +102,7 @@ async function updateSystemConfig(req, res) {
   );
 
   await AuditLog.create({
-    actor:      String(req.user._id),
+    actor:      req.user.userId || String(req.user._id),
     action:     'system.config_updated',
     resource:   'system_config',
     resourceId: key,
@@ -115,7 +115,7 @@ async function updateSystemConfig(req, res) {
   logger.warn('SystemCtrl: config key updated', {
     key,
     newValue: data.value,
-    adminId:  String(req.user._id),
+    adminId:  req.user.userId || String(req.user._id),
   });
 
   res.json({ success: true, data: { config: updated } });
@@ -267,7 +267,7 @@ async function pauseInvoices(req, res) {
   await redis.set(PAUSE_INVOICES_KEY, '1');
 
   await AuditLog.create({
-    actor:      String(req.user._id),
+    actor:      req.user.userId || String(req.user._id),
     action:     'system.invoices_paused',
     resource:   'system',
     resourceId: 'global',
@@ -277,7 +277,7 @@ async function pauseInvoices(req, res) {
     metadata:   { reason: req.body?.reason || 'Admin emergency action' },
   });
 
-  logger.warn('SystemCtrl: INVOICE CREATION PAUSED', { adminId: String(req.user._id) });
+  logger.warn('SystemCtrl: INVOICE CREATION PAUSED', { adminId: req.user.userId || String(req.user._id) });
   res.json({ success: true, message: 'Invoice creation paused. No new invoices will be created until resumed.' });
 }
 
@@ -288,7 +288,7 @@ async function resumeInvoices(req, res) {
   await redis.del(PAUSE_INVOICES_KEY);
 
   await AuditLog.create({
-    actor:      String(req.user._id),
+    actor:      req.user.userId || String(req.user._id),
     action:     'system.invoices_resumed',
     resource:   'system',
     resourceId: 'global',
@@ -297,7 +297,7 @@ async function resumeInvoices(req, res) {
     timestamp:  new Date(),
   });
 
-  logger.info('SystemCtrl: invoice creation resumed', { adminId: String(req.user._id) });
+  logger.info('SystemCtrl: invoice creation resumed', { adminId: req.user.userId || String(req.user._id) });
   res.json({ success: true, message: 'Invoice creation resumed.' });
 }
 
@@ -308,7 +308,7 @@ async function pauseWithdrawals(req, res) {
   await redis.set(PAUSE_WITHDRAWALS_KEY, '1');
 
   await AuditLog.create({
-    actor:      String(req.user._id),
+    actor:      req.user.userId || String(req.user._id),
     action:     'system.withdrawals_paused',
     resource:   'system',
     resourceId: 'global',
@@ -318,7 +318,7 @@ async function pauseWithdrawals(req, res) {
     timestamp:  new Date(),
   });
 
-  logger.warn('SystemCtrl: WITHDRAWALS PAUSED', { adminId: String(req.user._id) });
+  logger.warn('SystemCtrl: WITHDRAWALS PAUSED', { adminId: req.user.userId || String(req.user._id) });
   res.json({ success: true, message: 'Withdrawals paused platform-wide.' });
 }
 
@@ -329,7 +329,7 @@ async function resumeWithdrawals(req, res) {
   await redis.del(PAUSE_WITHDRAWALS_KEY);
 
   await AuditLog.create({
-    actor:      String(req.user._id),
+    actor:      req.user.userId || String(req.user._id),
     action:     'system.withdrawals_resumed',
     resource:   'system',
     resourceId: 'global',
@@ -338,7 +338,7 @@ async function resumeWithdrawals(req, res) {
     timestamp:  new Date(),
   });
 
-  logger.info('SystemCtrl: withdrawals resumed', { adminId: String(req.user._id) });
+  logger.info('SystemCtrl: withdrawals resumed', { adminId: req.user.userId || String(req.user._id) });
   res.json({ success: true, message: 'Withdrawals resumed.' });
 }
 

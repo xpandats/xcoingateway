@@ -49,9 +49,21 @@ router.post('/api-keys',                asyncHandler(createApiKey));
 router.delete('/api-keys/:keyId',       asyncHandler(revokeApiKey));
 
 // ─── Webhook Configuration ───────────────────────────────────────────────────
+// H5 FIX: Rate limit webhook test to 1 per minute per merchant
+// Each call makes a real HTTP request to the merchant's server
+const rateLimit = require('express-rate-limit');
+const webhookTestLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max:      1,
+  keyGenerator: (req) => `merchant:${req.user.userId || req.user._id}:webhooktest`,
+  standardHeaders: true,
+  legacyHeaders:   false,
+  message: { success: false, code: 'RATE_LIMIT_EXCEEDED', message: 'Webhook test limited to 1 per minute per merchant.' },
+});
+
 // Order matters: specific paths before generic
 router.get('/webhook/deliveries',       asyncHandler(listWebhookDeliveries));
-router.post('/webhook/test',            asyncHandler(sendTestWebhook));
+router.post('/webhook/test',            webhookTestLimiter, asyncHandler(sendTestWebhook));
 router.post('/webhook/secret-rotate',   asyncHandler(rotateWebhookSecret));
 router.get('/webhook',                  asyncHandler(getWebhookConfig));
 router.put('/webhook',                  asyncHandler(updateWebhookConfig));
