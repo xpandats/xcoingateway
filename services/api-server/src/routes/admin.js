@@ -122,4 +122,44 @@ router.post('/system/resume-withdrawals',
   asyncHandler(resumeWithdrawals),
 );
 
+// ─── Audit Chain Integrity (#2 mainnet requirement) ───────────────────────────
+// Verify the cryptographic hash chain of the audit log.
+// Super-admin only — a broken chain is a security incident.
+const { verifyAuditChain, getAuditChainStatus } = require('../controllers/auditChainController');
+
+router.get('/audit-chain/status',  superAdminAuth, asyncHandler(getAuditChainStatus));
+router.post('/audit-chain/verify',
+  superAdminAuth,
+  confirmCriticalAction,     // ← TOTP required — chain verification reveals audit state
+  asyncHandler(verifyAuditChain),
+);
+
+// ─── OFAC Sync (#3 mainnet requirement) ──────────────────────────────────────
+// Manually trigger OFAC sanctions list sync.
+// Automated daily sync is handled by the compliance service cron job.
+const { triggerOfacSync, getOfacSyncStatus } = require('../controllers/ofacController');
+
+router.get('/compliance/ofac/status',   superAdminAuth, asyncHandler(getOfacSyncStatus));
+router.post('/compliance/ofac/sync',
+  superAdminAuth,
+  confirmCriticalAction,     // ← TOTP required — syncing OFAC affects all blacklists
+  asyncHandler(triggerOfacSync),
+);
+
+// ─── Dead Letter Queue (#4 mainnet requirement) ───────────────────────────────
+// Monitor and retry failed queue messages.
+const { listDlqEntries, retryDlqEntry, purgeDlqEntry } = require('../controllers/dlqController');
+
+router.get('/dlq',                      superAdminAuth, asyncHandler(listDlqEntries));
+router.post('/dlq/:jobId/retry',
+  superAdminAuth,
+  confirmCriticalAction,
+  asyncHandler(retryDlqEntry),
+);
+router.delete('/dlq/:jobId',
+  superAdminAuth,
+  confirmCriticalAction,
+  asyncHandler(purgeDlqEntry),
+);
+
 module.exports = router;

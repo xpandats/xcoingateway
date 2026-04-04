@@ -1,0 +1,19 @@
+#!/usr/bin/env sh
+. "$(dirname -- "$0")/_/husky.sh"
+
+# XCoinGateway — Pre-commit Security Hook
+# Runs before every commit to prevent accidental secret leaks
+
+echo "🔒 Running pre-commit security checks..."
+
+# 1. Secrets scanner
+node scripts/checkSecrets.js
+if [ $? -ne 0 ]; then
+  echo ""
+  echo "❌ COMMIT BLOCKED: Secrets detected in staged files."
+  echo "   Remove secrets and try again."
+  exit 1
+fi
+
+echo "✅ Pre-commit checks passed"
+exit 0

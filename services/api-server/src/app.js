@@ -30,6 +30,7 @@ const hpp = require('hpp');
 const cookieParser = require('cookie-parser');
 
 const { noSqlSanitize } = require('./middleware/noSqlSanitize');
+const { requestHardening } = require('./middleware/requestHardening');
 const { randomUUID } = require('@xcg/crypto');
 const { createLogger } = require('@xcg/logger');
 const { AppError, HttpStatus, response, requestContextMiddleware } = require('@xcg/common');
@@ -232,7 +233,14 @@ app.use('/api/', (req, res, next) => {
 app.use(noSqlSanitize);
 
 // ═══════════════════════════════════════════════════════════════
-// 6b. CSRF-2: ORIGIN VALIDATION (MUST be AFTER body parser)
+// 6b. WAF REQUEST HARDENING (#8 mainnet requirement)
+// ═══════════════════════════════════════════════════════════════
+// Code-level WAF: path traversal, null bytes, scanner UAs, host injection.
+// Defense-in-depth BEFORE Cloudflare/Nginx WAF layer.
+app.use('/api/', requestHardening);
+
+// ═══════════════════════════════════════════════════════════════
+// 6c. CSRF-2: ORIGIN VALIDATION (MUST be AFTER body parser)
 // ═══════════════════════════════════════════════════════════════
 // Server-side Origin check — independent of CORS.
 // Prevents CSRF on state-mutation endpoints.

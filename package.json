@@ -23,7 +23,10 @@
     "ci:install": "npm ci",
     "start:prod": "pm2 start ecosystem.config.js --env production",
     "stop:prod": "pm2 stop xcg-api-server",
-    "reload:prod": "pm2 reload xcg-api-server --update-env"
+    "reload:prod": "pm2 reload xcg-api-server --update-env",
+    "backup": "node scripts/backup/mongoBackup.js",
+    "check:secrets": "node scripts/checkSecrets.js",
+    "prepare": "husky install"
   },
   "engines": {
     "node": ">=20.0.0"
@@ -48,6 +51,10 @@
     "mongoose": "^9.3.3",
     "otplib": "^13.4.0",
     "tronweb": "^6.0.0",
-    "uuid": "^11.1.0"
+    "uuid": "^11.1.0",
+    "xml2js": "^0.6.2"
+  },
+  "devDependencies": {
+    "husky": "^9.1.7"
   }
 }

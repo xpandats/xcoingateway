@@ -1,6 +1,7 @@
 'use strict';
 
 const { connectDB, disconnectDB, isDBConnected } = require('./src/connection');
+const { connectAuditDB, disconnectAuditDB, getAuditConnection } = require('./src/auditConnection');
 
 // Models
 const User              = require('./src/models/User');
@@ -22,9 +23,15 @@ const BlacklistedWallet = require('./src/models/BlacklistedWallet');
 const FraudEvent        = require('./src/models/FraudEvent');
 
 module.exports = {
+  // Connections
   connectDB,
   disconnectDB,
   isDBConnected,
+  // Separate INSERT-ONLY audit connection (#1 mainnet requirement)
+  connectAuditDB,
+  disconnectAuditDB,
+  getAuditConnection,
+  // Models
   User,
   Merchant,
   Wallet,
