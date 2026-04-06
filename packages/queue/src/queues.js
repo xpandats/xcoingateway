@@ -30,6 +30,9 @@ const QUEUES = Object.freeze({
   WEBHOOK_DELIVER:      'xcg:webhook:deliver',
   SYSTEM_ALERT:         'xcg:system:alert',
   DEAD_LETTER:          'xcg:dead:letter',
+  SETTLEMENT_PROCESS:   'xcg:settlement:process',
+  REFUND_PROCESS:       'xcg:refund:process',
+  TRANSFER_PROCESS:     'xcg:transfer:process',
 });
 
 module.exports = { QUEUES };

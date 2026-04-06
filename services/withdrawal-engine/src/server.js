@@ -10,7 +10,7 @@ require('dotenv').config({ path: path.resolve(__dirname, '../../../.env.local') 
 
 const { config, validateConfig }               = require('../../api-server/src/config');
 const { connectDB }                             = require('@xcg/database');
-const { Withdrawal, AuditLog, Wallet }          = require('@xcg/database');
+const { Withdrawal, AuditLog, Wallet, Refund, WalletTransfer }          = require('@xcg/database');
 const { createLogger }                          = require('@xcg/logger');
 const { createConsumer, createPublisher, createDLQMonitor, QUEUES } = require('@xcg/queue');
 const { startHealthServer }                     = require('@xcg/common/src/healthServer');
@@ -21,7 +21,12 @@ const mongoose                                  = require('mongoose');
 
 const TronAdapter                               = require('@xcg/tron').TronAdapter;
 const WithdrawalProcessor                       = require('./processor');
+const SettlementProcessor                       = require('./settlementProcessor');
+const RefundProcessor                           = require('./refundProcessor');
+const TransferProcessor                         = require('./transferProcessor');
 const WithdrawalConfirmationTracker             = require('./withdrawalConfirmationTracker');
+const RefundConfirmationTracker                 = require('./refundConfirmationTracker');
+const TransferConfirmationTracker               = require('./transferConfirmationTracker');
 
 const logger = createLogger('withdrawal-engine');
 
@@ -70,6 +75,10 @@ async function main() {
     logger,
     redis,       // H3: needed for per-merchant distributed lock
   });
+
+  const settlementProcessor = new SettlementProcessor({ logger, withdrawalPublisher: selfPublisher });
+  const refundProcessor = new RefundProcessor({ redis, signingPublisher, alertPublisher, logger });
+  const transferProcessor = new TransferProcessor({ signingPublisher, logger });
 
   // ── H1 FIX: Startup recovery for withdrawals stuck in 'signing' status ──────
   // Scenario: service crashed after publishing to signing:request queue,
@@ -165,6 +174,23 @@ async function main() {
   });
   await confirmationTracker.start();
 
+  const refundTracker = new RefundConfirmationTracker({
+    tronAdapter,
+    confirmedPublisher: confirmationPublisher,
+    alertPublisher,
+    minConfirmations: config.tron.confirmationsRequired || 19,
+    logger,
+  });
+  await refundTracker.start();
+
+  const transferTracker = new TransferConfirmationTracker({
+    tronAdapter,
+    alertPublisher,
+    minConfirmations: config.tron.confirmationsRequired || 19,
+    logger,
+  });
+  await transferTracker.start();
+
   const { worker: eligibleWorker } = createConsumer(
     QUEUES.WITHDRAWAL_ELIGIBLE,
     redisOpts,
@@ -190,31 +216,60 @@ async function main() {
       }
 
       try {
-        const updated = await Withdrawal.findOneAndUpdate(
-          { _id: data.withdrawalId, status: 'signing' }, // Only update if still in signing state
-          { $set: { status: 'broadcast', txHash: data.txHash, broadcastAt: new Date() } },
-          { new: true },
-        );
+        const type = data.type || 'withdrawal';
 
-        if (!updated) {
-          // Already updated (race condition or recovered on startup) — not an error
-          logger.info('WithdrawalEngine: signing:complete — withdrawal already updated (idempotent)', {
+        if (type === 'withdrawal') {
+          const updated = await Withdrawal.findOneAndUpdate(
+            { _id: data.withdrawalId, status: 'signing' }, // Only update if still in signing state
+            { $set: { status: 'broadcast', txHash: data.txHash, broadcastAt: new Date() } },
+            { new: true },
+          );
+
+          if (!updated) {
+            logger.info('WithdrawalEngine: signing:complete — withdrawal already updated (idempotent)', {
+              withdrawalId: data.withdrawalId, txHash: data.txHash,
+            });
+            return;
+          }
+
+          logger.info('WithdrawalEngine: withdrawal broadcast confirmed', {
             withdrawalId: data.withdrawalId, txHash: data.txHash,
           });
-          return;
+
+          confirmationTracker.track(String(updated._id), data.txHash, {
+            withdrawalId: updated.withdrawalId,
+            merchantId:   String(updated.merchantId),
+            amount:       String(updated.amount),
+            toAddress:    updated.toAddress,
+          });
+        }
+        else if (type === 'refund') {
+          // Re-using withdrawalId as generic sourceId/documentId from the signing payload
+          const updated = await Refund.findOneAndUpdate(
+            { _id: data.withdrawalId, status: 'signing' },
+            { $set: { status: 'broadcast', txHash: data.txHash, broadcastAt: new Date() } },
+            { new: true }
+          );
+          if (!updated) return;
+          logger.info('WithdrawalEngine: refund broadcast confirmed', { refundId: updated.refundId, txHash: data.txHash });
+          refundTracker.track(String(updated._id), data.txHash, {
+            refundId: updated.refundId, merchantId: String(updated.merchantId), amount: String(updated.refundAmount), toAddress: updated.toAddress,
+          });
+        }
+        else if (type === 'transfer') {
+          // Re-using withdrawalId as generic sourceId/documentId
+          const updated = await WalletTransfer.findOneAndUpdate(
+            { _id: data.withdrawalId, status: 'signing' },
+            { $set: { status: 'broadcast', txHash: data.txHash, broadcastAt: new Date() } },
+            { new: true }
+          );
+          if (!updated) return;
+          logger.info('WithdrawalEngine: transfer broadcast confirmed', { transferId: updated.transferId, txHash: data.txHash });
+          transferTracker.track(String(updated._id), data.txHash, {
+            transferId: updated.transferId, amount: String(updated.amount), toAddress: updated.toAddress,
+          });
         }
 
-        logger.info('WithdrawalEngine: withdrawal broadcast confirmed', {
-          withdrawalId: data.withdrawalId, txHash: data.txHash,
-        });
-
-        // Start tracking confirmation — poll Tron until tx has enough confirmations
-        confirmationTracker.track(String(updated._id), data.txHash, {
-          withdrawalId: updated.withdrawalId,
-          merchantId:   String(updated.merchantId),
-          amount:       String(updated.amount),
-          toAddress:    updated.toAddress,
-        });
       } catch (err) {
         logger.error('WithdrawalEngine: signing:complete consumer failed to update withdrawal', {
           withdrawalId: data.withdrawalId, txHash: data.txHash, error: err.message,
@@ -232,6 +287,10 @@ async function main() {
     },
     { concurrency: 5 },
   );
+
+  const { worker: settlementWorker } = createConsumer(QUEUES.SETTLEMENT_PROCESS, redisOpts, config.queue.signingSecret, logger, (data, id) => settlementProcessor.handle(data, id), { concurrency: 2 });
+  const { worker: refundWorker } = createConsumer(QUEUES.REFUND_PROCESS, redisOpts, config.queue.signingSecret, logger, (data, id) => refundProcessor.handle(data, id), { concurrency: 2 });
+  const { worker: transferWorker } = createConsumer(QUEUES.TRANSFER_PROCESS, redisOpts, config.queue.signingSecret, logger, (data, id) => transferProcessor.handle(data, id), { concurrency: 1 });
 
   // M3 FIX: DLQ monitor — alerts on dead letter queue messages
   const dlqMonitor = createDLQMonitor({
@@ -299,9 +358,14 @@ async function main() {
     cleanup: async () => {
       clearTimeout(gasMonitorTimer);
       confirmationTracker.stop();
+      refundTracker.stop();
+      transferTracker.stop();
       dlqMonitor.stop();
       await eligibleWorker.close();
       await signingCompleteWorker.close();
+      await settlementWorker.close();
+      await refundWorker.close();
+      await transferWorker.close();
       await redis.quit();
     },
   });

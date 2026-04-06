@@ -31,6 +31,7 @@ const SIGNING_REQUEST_SCHEMA = Joi.object({
   toAddress:    Joi.string().pattern(/^T[1-9A-HJ-NP-Za-km-z]{33}$/).required(),
   amount:       Joi.string().pattern(/^\d+\.\d{1,6}$/).required(), // e.g. "150.500000"
   network:      Joi.string().valid('mainnet', 'testnet').required(),
+  type:         Joi.string().valid('withdrawal', 'refund', 'transfer').optional(),
 }).options({ stripUnknown: true });
 
 // ─── USDT TRC20 Contract Addresses (hardcoded) ───────────────────────────────

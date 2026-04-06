@@ -122,7 +122,7 @@ class WithdrawalProcessor {
     }
 
     this.logger.info('WithdrawalProcessor: processing withdrawal eligible', {
-      merchantId, invoiceId, amount,
+      merchantId, invoiceId, settlementId: data.settlementId, amount,
     });
 
     // ── H3 FIX: Distributed lock per merchant (prevents balance race condition) ────
@@ -162,6 +162,7 @@ class WithdrawalProcessor {
    * Extracted so lock release in finally{} is guaranteed regardless of outcome.
    */
   async _processWithLock(data, idempotencyKey, publisherSelf, { merchantId, invoiceId, amount, amountFloat }) {
+    const settlementId = data.settlementId;
 
     // ── 1. Load merchant withdrawal address ───────────────────────────────────
     const merchant = await Merchant.findById(merchantId)
@@ -368,6 +369,17 @@ class WithdrawalProcessor {
           totalWithdrawn:    amountFloat,
           withdrawalCount:   1,
         }, session);
+
+        // Link to settlement if this withdrawal was generated from one
+        if (settlementId) {
+          const { Settlement } = require('@xcg/database');
+          await Settlement.findByIdAndUpdate(settlementId, {
+            $set: {
+              withdrawalId: withdrawal._id,
+              status: 'processing', // Promoted from pending
+            }
+          }, { session });
+        }
       });
 
       this.logger.info('WithdrawalProcessor: withdrawal record created', {

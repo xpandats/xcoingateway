@@ -185,7 +185,8 @@ async function main() {
       await completePublisher.publish(
         {
           requestId:    data.requestId,
-          withdrawalId: data.withdrawalId, // ← required by withdrawal engine consumer
+          withdrawalId: data.withdrawalId, // masquerades generic sourceId
+          type:         data.type || 'withdrawal',
           txHash:       result.txHash,
           success:      true,
         },

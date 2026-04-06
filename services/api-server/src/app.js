@@ -511,9 +511,19 @@ app.use((err, req, res, _next) => {
  * @param {object} [redisClient]                  - IORedis instance
  * @param {object} [paymentCreatedPublisher]       - Queue publisher for payment.created events
  * @param {object} [withdrawalEligiblePublisher]   - Queue publisher for withdrawal.eligible events
+ * @param {object} [settlementPublisher]
+ * @param {object} [refundPublisher]
+ * @param {object} [transferPublisher]
  * @returns {express.Application}
  */
-function createApp(redisClient, paymentCreatedPublisher, withdrawalEligiblePublisher) {
+function createApp(
+  redisClient,
+  paymentCreatedPublisher,
+  withdrawalEligiblePublisher,
+  settlementPublisher,
+  refundPublisher,
+  transferPublisher
+) {
   if (redisClient) {
     app.locals.redis = redisClient;
 
@@ -542,6 +552,21 @@ function createApp(redisClient, paymentCreatedPublisher, withdrawalEligiblePubli
     // Admin controller also needs it for approved high-value withdrawals
     const { setWithdrawalEligiblePublisher: setAdminWdlPub } = require('./controllers/adminController');
     setAdminWdlPub(withdrawalEligiblePublisher);
+  }
+
+  if (settlementPublisher) {
+    const { setSettlementPublisher } = require('./controllers/settlementController');
+    setSettlementPublisher(settlementPublisher);
+  }
+
+  if (refundPublisher) {
+    const { setRefundPublisher } = require('./controllers/refundController');
+    setRefundPublisher(refundPublisher);
+  }
+
+  if (transferPublisher) {
+    const { setTransferPublisher } = require('./controllers/walletTransferController');
+    setTransferPublisher(transferPublisher);
   }
 
   return app;

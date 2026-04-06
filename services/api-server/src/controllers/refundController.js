@@ -34,6 +34,11 @@ const { AppError, validate, validateObjectId }        = require('@xcg/common');
 const asyncHandler  = require('../utils/asyncHandler');
 const { createLogger } = require('@xcg/logger');
 
+let refundQueuePublisher = null;
+function setRefundPublisher(publisher) {
+  refundQueuePublisher = publisher;
+}
+
 const logger = createLogger('refund-ctrl');
 
 // ─── Joi Schemas ──────────────────────────────────────────────────────────────
@@ -235,6 +240,13 @@ async function approveRefund(req, res) {
     },
   });
 
+  if (refundQueuePublisher) {
+    await refundQueuePublisher.publish(
+      { refundId: String(refund._id) },
+      `refund:${refundId}`
+    );
+  }
+
   logger.info('Refund approved', { refundId, actor: req.user.userId });
   res.json({ success: true, data: { refund: refund.toSafeJSON() } });
 }
@@ -289,4 +301,5 @@ module.exports = {
   createRefund:  asyncHandler(createRefund),
   approveRefund: asyncHandler(approveRefund),
   rejectRefund:  asyncHandler(rejectRefund),
+  setRefundPublisher,
 };

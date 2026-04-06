@@ -19,7 +19,7 @@
  */
 
 const { v4: uuidv4 }  = require('uuid');
-const { Wallet, LedgerEntry, ReconciliationReport } = require('@xcg/database');
+const { Wallet, LedgerEntry, ReconciliationReport, MerchantBalance } = require('@xcg/database');
 
 const RECONCILE_INTERVAL_MS   = 15 * 60 * 1000; // 15 minutes
 const MISMATCH_THRESHOLD      = 0.01;            // $0.01 USDT tolerance
@@ -283,6 +283,14 @@ class Reconciler {
       }
     }
 
+    // ── Merchant Balance Drift Check ─────────────────────────────────────────
+    const driftAnyMismatch = await this._checkMerchantBalanceDrift(report, mismatches);
+    if (driftAnyMismatch) {
+      anyMismatch = true;
+      pausedWithdrawals = true;
+      alertSent = true;
+    }
+
     // ── Lift reconciler-set pause only if ALL wallets clean ──────────────────
     if (!anyMismatch && wallets.length > 0) {
       const pauseReason = await this.redis.get(PAUSE_REASON_KEY);
@@ -336,6 +344,79 @@ class Reconciler {
     ]);
 
     return result.length ? result[0].credits - result[0].debits : 0;
+  }
+
+  /**
+   * Compares the MerchantBalance cache against the authoritative LedgerEntry aggregate.
+   */
+  async _checkMerchantBalanceDrift(report, mismatches) {
+    this.logger.info('Reconciler: checking merchant balance drift', { reportId: report.reportId });
+    let anyMismatch = false;
+
+    try {
+      // 1. Group ledger entries by merchantId
+      const ledgerAgg = await LedgerEntry.aggregate([
+        { $match: { account: 'merchant_receivable' } },
+        { 
+          $group: { 
+            _id: '$merchantId', 
+            credits: { $sum: { $cond: [{ $eq: ['$type', 'credit'] }, '$amount', 0] } }, 
+            debits:  { $sum: { $cond: [{ $eq: ['$type', 'debit'] }, '$amount', 0] } } 
+          } 
+        }
+      ]);
+      const ledgerBalances = new Map(ledgerAgg.map(acc => [String(acc._id), acc.credits - acc.debits]));
+
+      // 2. Fetch all MerchantBalance records
+      const merchantBalances = await MerchantBalance.find().select('merchantId availableBalance').lean();
+
+      for (const mb of merchantBalances) {
+        const merchantIdStr = String(mb.merchantId);
+        const ledgerBal = ledgerBalances.get(merchantIdStr) || 0;
+        const cachedBal = mb.availableBalance || 0;
+        const diff = Math.abs(cachedBal - ledgerBal);
+
+        if (diff > MISMATCH_THRESHOLD) {
+          anyMismatch = true;
+          const severity = diff >= 100 ? 'critical' : diff >= 1 ? 'major' : 'minor';
+
+          mismatches.push({
+            merchantId: merchantIdStr,
+            merchantBalance: cachedBal,
+            ledgerBalance: ledgerBal,
+            difference: cachedBal - ledgerBal,
+            severity,
+            type: 'merchant_balance_drift'
+          });
+
+          this.logger.error('Reconciler: MERCHANT BALANCE DRIFT DETECTED', {
+            merchantId: merchantIdStr,
+            merchantBalance: cachedBal,
+            ledgerBalance: ledgerBal,
+            diff,
+            severity,
+          });
+
+          // Auto-pause withdrawals
+          await this.redis.set(PAUSE_WITHDRAWALS_KEY, '1',                    'EX', 24 * 60 * 60);
+          await this.redis.set(PAUSE_REASON_KEY,       RECONCILER_PAUSE_REASON, 'EX', 24 * 60 * 60);
+
+          await this._alert('merchant_balance_drift', {
+            reportId: report.reportId,
+            merchantId: merchantIdStr,
+            merchantBalance: cachedBal,
+            ledgerBalance: ledgerBal,
+            diff,
+            severity,
+            message: `CRITICAL: MerchantBalance drift of ${diff.toFixed(6)} USDT for merchant ${merchantIdStr} (${severity}). Withdrawals auto-paused for 24h.`,
+          });
+        }
+      }
+    } catch (err) {
+      this.logger.error('Reconciler: failed to check merchant balance drift', { error: err.message });
+    }
+
+    return anyMismatch;
   }
 
   async _alert(type, payload) {

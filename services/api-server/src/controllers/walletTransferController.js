@@ -28,6 +28,11 @@ const { AppError, validate, validateObjectId } = require('@xcg/common');
 const asyncHandler  = require('../utils/asyncHandler');
 const { createLogger } = require('@xcg/logger');
 
+let transferQueuePublisher = null;
+function setTransferPublisher(publisher) {
+  transferQueuePublisher = publisher;
+}
+
 const logger = createLogger('transfer-ctrl');
 
 // ─── Joi Schemas ──────────────────────────────────────────────────────────────
@@ -158,6 +163,13 @@ async function createTransfer(req, res) {
     amount: data.amount, token: data.token,
   });
 
+  if (transferQueuePublisher) {
+    await transferQueuePublisher.publish(
+      { transferId: String(transfer._id) },
+      `transfer:${transferId}`
+    );
+  }
+
   res.status(201).json({ success: true, data: { transfer } });
 }
 
@@ -165,4 +177,5 @@ module.exports = {
   listTransfers:  asyncHandler(listTransfers),
   getTransfer:    asyncHandler(getTransfer),
   createTransfer: asyncHandler(createTransfer),
+  setTransferPublisher,
 };

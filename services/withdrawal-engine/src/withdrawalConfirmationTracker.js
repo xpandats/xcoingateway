@@ -31,7 +31,7 @@
  *   - Alerts on failure: operator is notified if a withdrawal cannot be confirmed
  */
 
-const { Withdrawal, LedgerEntry } = require('@xcg/database');
+const { Withdrawal, LedgerEntry, Settlement } = require('@xcg/database');
 const { v4: uuidv4 } = require('uuid');
 
 const POLL_INTERVAL_MS  = 30_000;  // Poll every 30 seconds
@@ -240,6 +240,34 @@ class WithdrawalConfirmationTracker {
         });
       }
     });
+
+    // ── Complete corresponding Settlement (if this was a settlement withdrawal) ──
+    try {
+      const settlement = await Settlement.findOneAndUpdate(
+        { withdrawalId: updated._id, status: 'processing' },
+        {
+          $set: {
+            status: 'completed',
+            txHash: entry.txHash,
+            completedAt: updated.confirmedAt,
+          }
+        },
+        { new: true }
+      ).lean();
+
+      if (settlement) {
+        this.logger.info('WithdrawalConfirmationTracker: settlement completed on-chain', {
+          settlementId: settlement.settlementId,
+          withdrawalId: updated.withdrawalId,
+          txHash: entry.txHash
+        });
+      }
+    } catch (err) {
+      this.logger.error('WithdrawalConfirmationTracker: failed to update settlement status', {
+        withdrawalId: updated.withdrawalId,
+        error: err.message
+      });
+    }
 
     // Fire withdrawal.completed event to notification service (→ merchant webhook)
     if (this.confirmedPublisher) {

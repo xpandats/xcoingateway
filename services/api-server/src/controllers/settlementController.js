@@ -32,6 +32,11 @@ const { AppError, validate, validateObjectId }    = require('@xcg/common');
 const asyncHandler  = require('../utils/asyncHandler');
 const { createLogger } = require('@xcg/logger');
 
+let settlementQueuePublisher = null;
+function setSettlementPublisher(publisher) {
+  settlementQueuePublisher = publisher;
+}
+
 const logger = createLogger('settlement-ctrl');
 
 // ─── Joi Schemas ──────────────────────────────────────────────────────────────
@@ -189,6 +194,13 @@ async function createSettlement(req, res) {
     invoiceCount: invoices.length, netAmount: parseFloat(netAmount.toFixed(6)),
   });
 
+  if (settlementQueuePublisher) {
+    await settlementQueuePublisher.publish(
+      { settlementId: String(settlement._id) },
+      `settlement:${settlementId}`
+    );
+  }
+
   res.status(201).json({ success: true, data: { settlement } });
 }
 
@@ -237,4 +249,5 @@ module.exports = {
   getSettlement:    asyncHandler(getSettlement),
   createSettlement: asyncHandler(createSettlement),
   cancelSettlement: asyncHandler(cancelSettlement),
+  setSettlementPublisher,
 };

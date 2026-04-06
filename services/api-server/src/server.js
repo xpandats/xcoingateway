@@ -81,9 +81,17 @@ async function startServer() {
     const paymentCreatedPublisher = createPublisher(
       QUEUES.PAYMENT_CREATED, redisOpts, config.queue.signingSecret, logger,
     );
-    // Publisher for withdrawal.eligible — triggers withdrawal engine for manual withdrawal requests
     const withdrawalEligiblePublisher = createPublisher(
       QUEUES.WITHDRAWAL_ELIGIBLE, redisOpts, config.queue.signingSecret, logger,
+    );
+    const settlementPublisher = createPublisher(
+      QUEUES.SETTLEMENT_PROCESS, redisOpts, config.queue.signingSecret, logger,
+    );
+    const refundPublisher = createPublisher(
+      QUEUES.REFUND_PROCESS, redisOpts, config.queue.signingSecret, logger,
+    );
+    const transferPublisher = createPublisher(
+      QUEUES.TRANSFER_PROCESS, redisOpts, config.queue.signingSecret, logger,
     );
 
     // 4d. Circuit breaker monitoring (Gap 6)
@@ -128,7 +136,14 @@ async function startServer() {
     });
 
     // 5. Create Express app with Redis + publishers injected
-    const app = createApp(redis, paymentCreatedPublisher, withdrawalEligiblePublisher);
+    const app = createApp(
+      redis, 
+      paymentCreatedPublisher, 
+      withdrawalEligiblePublisher,
+      settlementPublisher,
+      refundPublisher,
+      transferPublisher
+    );
 
     // 6. Start HTTP server
     const server = app.listen(config.port, () => {
