@@ -25,8 +25,9 @@
  */
 
 const Joi = require('joi');
+const crypto = require('crypto');
 const { validate, AppError } = require('@xcg/common');
-const { Invoice } = require('@xcg/database');
+const { Invoice, PaymentSession } = require('@xcg/database');
 const { INVOICE_STATUS } = require('@xcg/common').constants;
 const asyncHandler = require('../utils/asyncHandler');
 const logger = require('@xcg/logger').createLogger('public-pay');
@@ -102,6 +103,33 @@ async function getPublicInvoice(req, res) {
     ? Math.max(0, Math.floor((new Date(invoice.expiresAt) - Date.now()) / 1000))
     : 0;
 
+  // Create or update PaymentSession for analytics (non-blocking)
+  const sessionId = `ps_${crypto.randomBytes(12).toString('hex')}`;
+  const visitorIpHash = req.ip ? crypto.createHash('sha256').update(req.ip).digest('hex').slice(0, 16) : null;
+
+  PaymentSession.findOneAndUpdate(
+    { invoiceId: invoice._id, status: 'active' },
+    {
+      $setOnInsert: {
+        sessionId,
+        invoiceId:     invoice._id,
+        merchantId:    invoice.merchantId || null,
+        displayAmount: invoice.uniqueAmount,
+        displayAddress:invoice.walletAddress,
+        currency:      invoice.currency,
+        network:       invoice.network || 'tron',
+        qrData:        `tron:${invoice.walletAddress}?amount=${invoice.uniqueAmount}&token=USDT`,
+        expiresAt:     invoice.expiresAt,
+        timeoutMs:     invoice.expiresAt ? Math.max(0, new Date(invoice.expiresAt) - Date.now()) : 0,
+        visitorIpHash,
+        visitorAgent:  (req.headers['user-agent'] || '').slice(0, 200),
+      },
+      $inc:  { pageViews: 1 },
+      $set:  { lastViewedAt: new Date() },
+    },
+    { upsert: true, new: true },
+  ).catch(() => {});
+
   res.json({
     success: true,
     data: {
@@ -110,7 +138,7 @@ async function getPublicInvoice(req, res) {
       displayStatus:   displayStatusMap[invoice.status] || invoice.status,
       isTerminal,
       isExpired,
-      amountUsdt:      invoice.uniqueAmount,  // Exact amount customer must send
+      amountUsdt:      invoice.uniqueAmount,
       currency:        invoice.currency,
       network:         invoice.network,
       walletAddress:   invoice.walletAddress,
@@ -118,7 +146,6 @@ async function getPublicInvoice(req, res) {
       timeRemainingSeconds: timeRemaining,
       confirmedAt:     invoice.confirmedAt || null,
       txHash:          invoice.txHash || null,
-      // QR data embedded for convenience
       qrData: `tron:${invoice.walletAddress}?amount=${invoice.uniqueAmount}&token=USDT`,
       createdAt:       invoice.createdAt,
     },

@@ -148,18 +148,106 @@ router.post('/compliance/ofac/sync',
 
 // ─── Dead Letter Queue (#4 mainnet requirement) ───────────────────────────────
 // Monitor and retry failed queue messages.
-const { listDlqEntries, retryDlqEntry, purgeDlqEntry } = require('../controllers/dlqController');
+const { listDlqEntries, retryDlqEntry, resolveDlqEntry, purgeDlqEntry } = require('../controllers/dlqController');
 
 router.get('/dlq',                      superAdminAuth, asyncHandler(listDlqEntries));
-router.post('/dlq/:jobId/retry',
+router.post('/dlq/:dlqId/retry',
   superAdminAuth,
   confirmCriticalAction,
   asyncHandler(retryDlqEntry),
 );
-router.delete('/dlq/:jobId',
+router.post('/dlq/:dlqId/resolve',
+  superAdminAuth,
+  confirmCriticalAction,
+  asyncHandler(resolveDlqEntry),
+);
+router.delete('/dlq/:dlqId',
   superAdminAuth,
   confirmCriticalAction,
   asyncHandler(purgeDlqEntry),
 );
 
+// ─── Settlement Management (#5 Phase 3) ──────────────────────────────────────
+const {
+  listSettlements, getSettlement, createSettlement, cancelSettlement,
+} = require('../controllers/settlementController');
+
+router.get('/settlements',                  adminAuth, asyncHandler(listSettlements));
+router.get('/settlements/:settlementId',    adminAuth, asyncHandler(getSettlement));
+router.post('/settlements',
+  adminAuth,
+  confirmCriticalAction,
+  asyncHandler(createSettlement),
+);
+router.post('/settlements/:settlementId/cancel',
+  adminAuth,
+  confirmCriticalAction,
+  asyncHandler(cancelSettlement),
+);
+
+// ─── Refund Management (#6 Phase 4) ──────────────────────────────────────────
+const {
+  listRefunds, getRefund, createRefund, approveRefund, rejectRefund,
+} = require('../controllers/refundController');
+
+router.get('/refunds',                      adminAuth, asyncHandler(listRefunds));
+router.get('/refunds/:refundId',            adminAuth, asyncHandler(getRefund));
+router.post('/refunds',
+  adminAuth,
+  confirmCriticalAction,
+  asyncHandler(createRefund),
+);
+router.post('/refunds/:refundId/approve',
+  adminAuth,
+  confirmCriticalAction,
+  asyncHandler(approveRefund),
+);
+router.post('/refunds/:refundId/reject',
+  adminAuth,
+  confirmCriticalAction,
+  asyncHandler(rejectRefund),
+);
+
+// ─── Wallet Transfer Management (#7 Phase 3) ─────────────────────────────────
+const {
+  listTransfers, getTransfer, createTransfer,
+} = require('../controllers/walletTransferController');
+
+router.get('/transfers',                    adminAuth, asyncHandler(listTransfers));
+router.get('/transfers/:transferId',        adminAuth, asyncHandler(getTransfer));
+router.post('/transfers',
+  superAdminAuth,
+  confirmCriticalAction,     // ← TOTP required — moving funds between wallets is critical
+  asyncHandler(createTransfer),
+);
+
+// ─── Energy & Staking Management (#8 Phase 5) ────────────────────────────────
+const {
+  listStakes, getStake, createStake, updateStake, getEnergySummary,
+} = require('../controllers/energyController');
+
+router.get('/energy/stakes',                adminAuth, asyncHandler(listStakes));
+router.get('/energy/stakes/:stakeId',       adminAuth, asyncHandler(getStake));
+router.get('/energy/summary',               adminAuth, asyncHandler(getEnergySummary));
+router.post('/energy/stakes',
+  superAdminAuth,
+  confirmCriticalAction,
+  asyncHandler(createStake),
+);
+router.put('/energy/stakes/:stakeId',
+  superAdminAuth,
+  confirmCriticalAction,
+  asyncHandler(updateStake),
+);
+
+// ─── Key Rotation Audit (#9 Phase 5) ─────────────────────────────────────────
+const {
+  listRotations, getRotation, getRotationStats,
+} = require('../controllers/keyRotationController');
+
+router.get('/key-rotations',                adminAuth, asyncHandler(listRotations));
+router.get('/key-rotations/stats',          adminAuth, asyncHandler(getRotationStats));
+router.get('/key-rotations/:rotationId',    adminAuth, asyncHandler(getRotation));
+
 module.exports = router;
+

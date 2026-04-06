@@ -23,7 +23,7 @@
 const bcrypt     = require('bcrypt');
 const crypto     = require('crypto');
 const { v4: uuidv4 } = require('uuid');
-const { Merchant, AuditLog } = require('@xcg/database');
+const { Merchant, AuditLog, KeyRotationLog } = require('@xcg/database');
 const { AppError } = require('@xcg/common');
 const { encrypt, decrypt, generateApiKey, generateApiSecret, generateWebhookSecret } = require('@xcg/crypto');
 const { config }  = require('../config');
@@ -226,6 +226,19 @@ class MerchantService {
 
     logger.info('MerchantService: API key created', { merchantId, keyId });
 
+    // Record key rotation event for compliance audit
+    KeyRotationLog.create({
+      rotationId:   `rot_${crypto.randomBytes(12).toString('hex')}`,
+      keyType:      'merchant_api_key',
+      merchantId,
+      newKeyId:     keyId,
+      status:       'completed',
+      completedAt:  new Date(),
+      durationMs:   0,
+      initiatedBy:  actor.userId,
+      reason:       'manual',
+    }).catch((e) => logger.debug('KeyRotationLog write failed', { error: e.message }));
+
     return {
       keyId,
       secret:   rawSecret,
@@ -270,6 +283,20 @@ class MerchantService {
     });
 
     logger.info('MerchantService: API key revoked', { merchantId, keyId });
+
+    // Record key revocation in rotation log
+    KeyRotationLog.create({
+      rotationId:   `rot_${crypto.randomBytes(12).toString('hex')}`,
+      keyType:      'merchant_api_key',
+      merchantId,
+      oldKeyId:     keyId,
+      newKeyId:     `revoked_${keyId}`,
+      status:       'completed',
+      completedAt:  new Date(),
+      durationMs:   0,
+      initiatedBy:  actor.userId,
+      reason:       'manual',
+    }).catch((e) => logger.debug('KeyRotationLog write failed', { error: e.message }));
   }
 
   /**
@@ -294,6 +321,19 @@ class MerchantService {
       outcome:    'success',
       timestamp:  new Date(),
     });
+
+    // Record webhook rotation in key rotation log
+    KeyRotationLog.create({
+      rotationId:   `rot_${crypto.randomBytes(12).toString('hex')}`,
+      keyType:      'merchant_webhook',
+      merchantId,
+      newKeyId:     `whsec_rotated_${Date.now()}`,
+      status:       'completed',
+      completedAt:  new Date(),
+      durationMs:   0,
+      initiatedBy:  actor.userId,
+      reason:       'manual',
+    }).catch((e) => logger.debug('KeyRotationLog write failed', { error: e.message }));
 
     return {
       webhookSecret: rawSecret,
