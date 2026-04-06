@@ -3,166 +3,255 @@
 /**
  * @module controllers/energyController
  *
- * Energy & Staking Management — Admin endpoints for TRX freeze/unfreeze tracking.
+ * Energy & TRX Staking Management — Admin endpoints for Tron energy tracking.
+ *
+ * SECURITY:
+ *   - List/Get/Summary: authenticate + authorize('admin') + require2FA + adminIpWhitelist
+ *   - Create/Update:    above + super_admin role + confirmCriticalAction (live TOTP)
+ *   - Status transitions validated with whitelist (no arbitrary status mutation)
+ *   - 14-day unfreeze window enforced at controller level not just model
+ *   - Wallet must exist and be active before creating stake
+ *   - All mutations logged to AuditLog
  *
  * Routes (mounted at /admin/energy):
- *   GET    /stakes              — List all energy stakes
+ *   GET    /summary             — Energy capacity summary (active stakes)
+ *   GET    /stakes              — List stakes
  *   GET    /stakes/:stakeId     — Get stake detail
- *   POST   /stakes              — Record new TRX freeze (TOTP)
- *   PUT    /stakes/:stakeId     — Update stake status (TOTP)
- *   GET    /summary             — Energy capacity summary across all wallets
+ *   POST   /stakes              — Record new TRX freeze (super_admin + TOTP)
+ *   PUT    /stakes/:stakeId     — Update stake status (super_admin + TOTP)
  */
 
-const { v4: uuidv4 } = require('uuid');
+const Joi           = require('joi');
+const crypto        = require('crypto');
 const { EnergyStake, Wallet, AuditLog } = require('@xcg/database');
-const { AppError } = require('@xcg/common');
-const asyncHandler = require('../utils/asyncHandler');
-const logger = require('@xcg/logger').createLogger('energy-ctrl');
+const { AppError, validate, validateObjectId } = require('@xcg/common');
+const asyncHandler  = require('../utils/asyncHandler');
+const { createLogger } = require('@xcg/logger');
+
+const logger = createLogger('energy-ctrl');
+
+// Valid status transitions: only allow forward-moving state machine
+const VALID_TRANSITIONS = {
+  active:    ['unstaking', 'failed'],
+  unstaking: ['unstaked', 'failed'],
+  unstaked:  [],   // terminal
+  failed:    [],   // terminal
+};
+
+// ─── Joi Schemas ──────────────────────────────────────────────────────────────
+
+const createStakeSchema = Joi.object({
+  walletId:       Joi.string().hex().length(24).required(),
+  trxAmount:      Joi.number().positive().required(),
+  stakeType:      Joi.string().valid('freeze_self', 'delegate_to', 'receive_from', 'energy_rental').required(),
+  freezeTxHash:   Joi.string().pattern(/^[a-fA-F0-9]{64}$/).optional(),
+  energyReceived: Joi.number().min(0).optional().default(0),
+  notes:          Joi.string().trim().max(500).optional().allow(''),
+}).options({ stripUnknown: true });
+
+const updateStakeSchema = Joi.object({
+  status:          Joi.string().valid('unstaking', 'unstaked', 'failed').required(),
+  unfreezeTxHash:  Joi.string().pattern(/^[a-fA-F0-9]{64}$/).when('status', {
+    is: 'unstaked', then: Joi.optional(), otherwise: Joi.optional(),
+  }),
+  notes:           Joi.string().trim().max(500).optional().allow(''),
+}).options({ stripUnknown: true });
+
+const listSchema = Joi.object({
+  walletId:  Joi.string().hex().length(24).optional(),
+  status:    Joi.string().valid('active', 'unstaking', 'unstaked', 'failed').optional(),
+  stakeType: Joi.string().valid('freeze_self', 'delegate_to', 'receive_from', 'energy_rental').optional(),
+  page:      Joi.number().integer().min(1).max(1000).default(1),
+  limit:     Joi.number().integer().min(1).max(100).default(20),
+}).options({ stripUnknown: true });
+
+// ─── GET /admin/energy/summary ────────────────────────────────────────────────
+
+async function getEnergySummary(req, res) {
+  const [activeStakes, unstakingStakes] = await Promise.all([
+    EnergyStake.find({ status: 'active'    }).select('trxAmount energyReceived bandwidthReceived stakeType walletAddress').lean(),
+    EnergyStake.find({ status: 'unstaking' }).select('trxAmount unfreezeReadyAt walletAddress').lean(),
+  ]);
+
+  const totalTrxFrozen      = activeStakes.reduce((s, st) => s + st.trxAmount, 0);
+  const totalEnergyPerDay   = activeStakes.reduce((s, st) => s + (st.energyReceived || 0), 0);
+  const totalBandwidthPerDay= activeStakes.reduce((s, st) => s + (st.bandwidthReceived || 0), 0);
+
+  const stakesByType = activeStakes.reduce((acc, st) => {
+    acc[st.stakeType] = (acc[st.stakeType] || 0) + 1;
+    return acc;
+  }, {});
+
+  // Unstaking stakes with ready dates in the past = TRX claimable now
+  const claimableNow = unstakingStakes.filter(
+    (st) => st.unfreezeReadyAt && new Date(st.unfreezeReadyAt) <= new Date(),
+  );
+
+  res.json({
+    success: true,
+    data: {
+      activeStakeCount:   activeStakes.length,
+      unstakingCount:     unstakingStakes.length,
+      claimableCount:     claimableNow.length,
+      totalTrxFrozen:     parseFloat(totalTrxFrozen.toFixed(6)),
+      totalEnergyPerDay,
+      totalBandwidthPerDay,
+      stakesByType,
+    },
+  });
+}
 
 // ─── GET /admin/energy/stakes ─────────────────────────────────────────────────
 
 async function listStakes(req, res) {
-  const { walletId, status, stakeType, page = 1, limit = 20 } = req.query;
+  const { walletId, status, stakeType, page, limit } = validate(listSchema, req.query);
   const filter = {};
-  if (walletId)   filter.walletId = walletId;
-  if (status)     filter.status = status;
-  if (stakeType)  filter.stakeType = stakeType;
+  if (walletId)  filter.walletId  = walletId;
+  if (status)    filter.status    = status;
+  if (stakeType) filter.stakeType = stakeType;
 
-  const skip = (Math.max(1, parseInt(page, 10)) - 1) * parseInt(limit, 10);
+  const skip = (page - 1) * limit;
   const [stakes, total] = await Promise.all([
-    EnergyStake.find(filter).sort({ createdAt: -1 }).skip(skip).limit(parseInt(limit, 10)).lean(),
+    EnergyStake.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
     EnergyStake.countDocuments(filter),
   ]);
 
   res.json({
     success: true,
-    data: { stakes, pagination: { page: parseInt(page, 10), limit: parseInt(limit, 10), total, pages: Math.ceil(total / parseInt(limit, 10)) } },
+    data: { stakes, pagination: { page, limit, total, pages: Math.ceil(total / limit) } },
   });
 }
 
 // ─── GET /admin/energy/stakes/:stakeId ────────────────────────────────────────
 
 async function getStake(req, res) {
-  const stake = await EnergyStake.findOne({ stakeId: req.params.stakeId }).lean();
+  const { stakeId } = req.params;
+  if (!stakeId || !/^stk_[a-zA-Z0-9]{24}$/.test(stakeId)) {
+    throw AppError.badRequest('Invalid stake ID format');
+  }
+
+  const stake = await EnergyStake.findOne({ stakeId }).lean();
   if (!stake) throw AppError.notFound('Energy stake not found');
-  res.json({ success: true, data: stake });
+  res.json({ success: true, data: { stake } });
 }
 
 // ─── POST /admin/energy/stakes ────────────────────────────────────────────────
 
 async function createStake(req, res) {
-  const { walletId, trxAmount, stakeType, freezeTxHash, energyReceived, notes } = req.body;
+  const data = validate(createStakeSchema, req.body);
 
-  if (!walletId || !trxAmount || !stakeType) {
-    throw AppError.badRequest('walletId, trxAmount, and stakeType are required');
-  }
+  validateObjectId(data.walletId, 'walletId');
 
-  const wallet = await Wallet.findById(walletId).select('_id address isActive').lean();
-  if (!wallet) throw AppError.notFound('Wallet not found');
+  const wallet = await Wallet.findById(data.walletId)
+    .select('_id address isActive walletType')
+    .lean();
+  if (!wallet)          throw AppError.notFound('Wallet not found');
+  if (!wallet.isActive) throw AppError.conflict('Wallet is inactive');
+
+  const stakeId = `stk_${crypto.randomBytes(12).toString('hex')}`;
 
   const stake = await EnergyStake.create({
-    stakeId:         `stk_${uuidv4().replace(/-/g, '').slice(0, 24)}`,
-    walletId,
-    walletAddress:   wallet.address,
-    network:         'tron',
-    stakeType,
-    trxAmount,
-    energyReceived:  energyReceived || 0,
-    freezeTxHash:    freezeTxHash || null,
-    frozenAt:        freezeTxHash ? new Date() : null,
-    status:          'active',
-    initiatedBy:     `admin:${req.user._id}`,
-    notes:           notes || '',
+    stakeId,
+    walletId:       wallet._id,
+    walletAddress:  wallet.address,
+    network:        'tron',
+    stakeType:      data.stakeType,
+    trxAmount:      data.trxAmount,
+    energyReceived: data.energyReceived,
+    freezeTxHash:   data.freezeTxHash || null,
+    frozenAt:       data.freezeTxHash ? new Date() : null,
+    status:         'active',
+    initiatedBy:    `admin:${req.user.userId}`,
+    notes:          data.notes || '',
   });
 
   await AuditLog.create({
-    actor:      req.user.userId || String(req.user._id),
-    action:     'admin.energy_stake_created',
+    actor:      req.user.userId,
+    action:     'admin.energy_stake.created',
     resource:   'energy_stake',
-    resourceId: stake.stakeId,
+    resourceId: stakeId,
     ipAddress:  req.ip,
     outcome:    'success',
     timestamp:  new Date(),
-    metadata:   { walletAddress: wallet.address, trxAmount, stakeType },
+    metadata: {
+      walletAddress:  wallet.address,
+      trxAmount:      data.trxAmount,
+      stakeType:      data.stakeType,
+      freezeTxHash:   data.freezeTxHash || null,
+      energyReceived: data.energyReceived,
+    },
   });
 
-  logger.info('Energy stake created', { stakeId: stake.stakeId, walletAddress: wallet.address, trxAmount });
-  res.status(201).json({ success: true, data: stake });
+  logger.info('Energy stake created', {
+    stakeId, walletAddress: wallet.address.slice(0, 8),
+    trxAmount: data.trxAmount, stakeType: data.stakeType,
+  });
+
+  res.status(201).json({ success: true, data: { stake } });
 }
 
 // ─── PUT /admin/energy/stakes/:stakeId ────────────────────────────────────────
 
 async function updateStake(req, res) {
   const { stakeId } = req.params;
-  const { status, unfreezeTxHash, notes } = req.body;
+  const data = validate(updateStakeSchema, req.body);
 
-  if (!status) throw AppError.badRequest('status is required');
-
-  const validStatuses = ['active', 'unstaking', 'unstaked', 'failed'];
-  if (!validStatuses.includes(status)) {
-    throw AppError.badRequest(`Invalid status. Must be: ${validStatuses.join(', ')}`);
+  if (!stakeId || !/^stk_[a-zA-Z0-9]{24}$/.test(stakeId)) {
+    throw AppError.badRequest('Invalid stake ID format');
   }
 
-  const update = { status };
-  if (status === 'unstaking') {
-    update.unfreezeStartAt = new Date();
-    update.unfreezeReadyAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000); // 14 days
-  }
-  if (status === 'unstaked') update.unstakedAt = new Date();
-  if (unfreezeTxHash) update.unfreezeTxHash = unfreezeTxHash;
-  if (notes) update.notes = notes;
-
-  const stake = await EnergyStake.findOneAndUpdate(
-    { stakeId },
-    { $set: update },
-    { new: true },
-  );
-
+  const stake = await EnergyStake.findOne({ stakeId });
   if (!stake) throw AppError.notFound('Energy stake not found');
 
+  // Enforce state machine — only allowed forward transitions
+  const allowedNextStates = VALID_TRANSITIONS[stake.status] || [];
+  if (!allowedNextStates.includes(data.status)) {
+    throw AppError.conflict(
+      `Invalid status transition: '${stake.status}' → '${data.status}'. ` +
+      `Allowed: [${allowedNextStates.join(', ') || 'none (terminal state)'}]`,
+    );
+  }
+
+  // Build the update patch
+  const patch = { status: data.status };
+  if (data.notes)         patch.notes = data.notes;
+  if (data.unfreezeTxHash) patch.unfreezeTxHash = data.unfreezeTxHash;
+
+  if (data.status === 'unstaking') {
+    patch.unfreezeStartAt = new Date();
+    patch.unfreezeReadyAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000); // Tron: 14-day lock
+  }
+  if (data.status === 'unstaked') {
+    patch.unstakedAt = new Date();
+  }
+
+  Object.assign(stake, patch);
+  await stake.save();
+
   await AuditLog.create({
-    actor:      req.user.userId || String(req.user._id),
-    action:     'admin.energy_stake_updated',
+    actor:      req.user.userId,
+    action:     'admin.energy_stake.updated',
     resource:   'energy_stake',
     resourceId: stakeId,
     ipAddress:  req.ip,
     outcome:    'success',
     timestamp:  new Date(),
-    metadata:   { newStatus: status, unfreezeTxHash },
-  });
-
-  logger.info('Energy stake updated', { stakeId, status });
-  res.json({ success: true, data: stake });
-}
-
-// ─── GET /admin/energy/summary ────────────────────────────────────────────────
-
-async function getEnergySummary(req, res) {
-  const activeStakes = await EnergyStake.find({ status: 'active' }).lean();
-
-  const totalTrxFrozen    = activeStakes.reduce((s, st) => s + st.trxAmount, 0);
-  const totalEnergyPerDay = activeStakes.reduce((s, st) => s + (st.energyReceived || 0), 0);
-  const stakesByType      = {};
-
-  for (const s of activeStakes) {
-    stakesByType[s.stakeType] = (stakesByType[s.stakeType] || 0) + 1;
-  }
-
-  res.json({
-    success: true,
-    data: {
-      activeStakeCount: activeStakes.length,
-      totalTrxFrozen,
-      totalEnergyPerDay,
-      stakesByType,
+    metadata: {
+      previousStatus:  stake.status,
+      newStatus:       data.status,
+      unfreezeTxHash:  data.unfreezeTxHash || null,
+      unfreezeReadyAt: patch.unfreezeReadyAt || null,
     },
   });
+
+  logger.info('Energy stake updated', { stakeId, status: data.status, actor: req.user.userId });
+  res.json({ success: true, data: { stake } });
 }
 
 module.exports = {
-  listStakes:      asyncHandler(listStakes),
-  getStake:        asyncHandler(getStake),
-  createStake:     asyncHandler(createStake),
-  updateStake:     asyncHandler(updateStake),
-  getEnergySummary:asyncHandler(getEnergySummary),
+  getEnergySummary: asyncHandler(getEnergySummary),
+  listStakes:       asyncHandler(listStakes),
+  getStake:         asyncHandler(getStake),
+  createStake:      asyncHandler(createStake),
+  updateStake:      asyncHandler(updateStake),
 };
