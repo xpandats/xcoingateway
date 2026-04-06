@@ -10,10 +10,28 @@
  *   - Event listeners registered ONCE (no leak on reconnect)
  *   - Graceful disconnect on shutdown
  *   - Connection health monitoring
+ *   - Circuit breaker integration (Gap 6): mongoBreaker opens instantly on
+ *     disconnect and closes on reconnect, providing immediate fast-fail for
+ *     all DB-dependent routes rather than waiting for individual query timeouts.
  */
 
 const mongoose = require('mongoose');
 const { createLogger } = require('@xcg/logger');
+
+// Lazy-load: avoid circular dep and allow services that don't need the breaker
+// (tests, migrations) to import this module without pulling in @xcg/common
+let _mongoBreaker = null;
+function getMongoBreaker() {
+  if (!_mongoBreaker) {
+    try {
+      _mongoBreaker = require('@xcg/common/src/circuitBreaker').mongoBreaker;
+    } catch {
+      // @xcg/common not installed in this context — breaker stays null
+    }
+  }
+  return _mongoBreaker;
+}
+
 
 const logger = createLogger('database');
 
@@ -34,11 +52,25 @@ function _registerListeners(uri) {
   mongoose.connection.on('connected', () => {
     isConnected = true;
     logger.info('MongoDB connected', { uri: safeUri });
+    // Close circuit breaker on successful connection — traffic can flow
+    const breaker = getMongoBreaker();
+    if (breaker && breaker.isOpen) {
+      // Manually transition OPEN → CLOSED (connection is ground-truth recovery signal)
+      breaker._transitionTo('CLOSED');
+      logger.info('MongoBreaker: circuit CLOSED — MongoDB has connected');
+    }
   });
 
   mongoose.connection.on('disconnected', () => {
     isConnected = false;
     logger.warn('MongoDB disconnected');
+    // Open circuit breaker immediately on disconnect — don't wait for 5 query timeouts.
+    // A socket disconnect is a 100% reliable failure signal.
+    const breaker = getMongoBreaker();
+    if (breaker && !breaker.isOpen) {
+      breaker._transitionTo('OPEN');
+      logger.error('MongoBreaker: circuit OPENED — MongoDB disconnected. DB calls will fast-fail.');
+    }
   });
 
   mongoose.connection.on('error', (err) => {
@@ -48,8 +80,15 @@ function _registerListeners(uri) {
   mongoose.connection.on('reconnected', () => {
     isConnected = true;
     logger.info('MongoDB reconnected');
+    // Close circuit on reconnect
+    const breaker = getMongoBreaker();
+    if (breaker && breaker.isOpen) {
+      breaker._transitionTo('CLOSED');
+      logger.info('MongoBreaker: circuit CLOSED — MongoDB reconnected');
+    }
   });
 }
+
 
 /**
  * Connect to MongoDB with retry logic.

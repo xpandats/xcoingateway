@@ -72,4 +72,28 @@ transactionSchema.methods.toSafeJSON = function () {
   return obj;
 };
 
+// ─── IMMUTABILITY — protect confirmed blockchain records ────────────────────
+// Blockchain-sourced fields are IMMUTABLE once transaction is confirmed.
+// These fields come from on-chain data — modifying them would be evidence tampering.
+const TX_FROZEN_FIELDS = new Set(['txHash', 'amount', 'fromAddress', 'toAddress', 'blockNumber', 'tokenContract', 'blockTimestamp', 'network']);
+
+transactionSchema.pre('findOneAndUpdate', function (next) {
+  this.model.findOne(this.getQuery(), { status: 1 }).lean().then((doc) => {
+    if (doc && doc.status === 'confirmed') {
+      const update = this.getUpdate() || {};
+      const setKeys = Object.keys(update.$set || {});
+      const frozen = setKeys.filter((k) => TX_FROZEN_FIELDS.has(k));
+      if (frozen.length > 0) {
+        return next(new Error(`SECURITY: Transaction in 'confirmed' state — blockchain fields immutable: ${frozen.join(', ')}`));
+      }
+    }
+    next();
+  }).catch(next);
+});
+
+transactionSchema.pre('deleteOne',         function (next) { next(new Error('SECURITY: Transaction records cannot be deleted')); });
+transactionSchema.pre('deleteMany',        function (next) { next(new Error('SECURITY: Transaction records cannot be deleted')); });
+transactionSchema.pre('findOneAndDelete',  function (next) { next(new Error('SECURITY: Transaction records cannot be deleted')); });
+transactionSchema.pre('findOneAndReplace', function (next) { next(new Error('SECURITY: Transaction records cannot be deleted')); });
+
 module.exports = mongoose.model('Transaction', transactionSchema);

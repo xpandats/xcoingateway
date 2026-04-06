@@ -25,7 +25,7 @@ const invoiceSchema = new mongoose.Schema({
 
   // Payment details
   walletAddress: { type: String, required: true, index: true }, // Receiving wallet TRC20 address
-  walletId:      { type: mongoose.Schema.Types.ObjectId, ref: 'Wallet', default: null, index: true }, // Wallet ref for reconciliation
+  walletId:      { type: mongoose.Schema.Types.ObjectId, ref: 'Wallet', required: true, index: true }, // Required for reconciliation
   description: { type: String, default: '' },
   metadata: { type: mongoose.Schema.Types.Mixed, default: {} }, // Merchant custom data
 
@@ -116,5 +116,29 @@ invoiceSchema.statics.createIdempotent = async function (data) {
     throw err; // Re-throw all other errors
   }
 };
+
+// ─── IMMUTABILITY — protect confirmed/success financial records ─────────────
+// Settlement amounts, fee breakdown, and txHash are evidence — cannot be modified.
+const INV_FROZEN_FIELDS = new Set(['baseAmount', 'uniqueAmount', 'amountOffset', 'feeAmount', 'netAmount', 'feePercentage', 'fixedFee', 'txHash', 'walletAddress', 'walletId']);
+const INV_FINAL_STATUSES = new Set(['confirmed', 'success']);
+
+invoiceSchema.pre('findOneAndUpdate', function (next) {
+  this.model.findOne(this.getQuery(), { status: 1 }).lean().then((doc) => {
+    if (doc && INV_FINAL_STATUSES.has(doc.status)) {
+      const update = this.getUpdate() || {};
+      const setKeys = Object.keys(update.$set || {});
+      const frozen = setKeys.filter((k) => INV_FROZEN_FIELDS.has(k));
+      if (frozen.length > 0) {
+        return next(new Error(`SECURITY: Invoice in '${doc.status}' state — financial fields immutable: ${frozen.join(', ')}`));
+      }
+    }
+    next();
+  }).catch(next);
+});
+
+invoiceSchema.pre('deleteOne',         function (next) { next(new Error('SECURITY: Invoice records cannot be deleted')); });
+invoiceSchema.pre('deleteMany',        function (next) { next(new Error('SECURITY: Invoice records cannot be deleted')); });
+invoiceSchema.pre('findOneAndDelete',  function (next) { next(new Error('SECURITY: Invoice records cannot be deleted')); });
+invoiceSchema.pre('findOneAndReplace', function (next) { next(new Error('SECURITY: Invoice records cannot be deleted')); });
 
 module.exports = mongoose.model('Invoice', invoiceSchema);

@@ -36,25 +36,47 @@ router.get('/', (req, res) => {
 
 /**
  * Readiness probe — are all dependencies ready?
- * ID-4: External response is minimal. Full details are logged internally, not exposed.
+ * Returns 503 if MongoDB or Redis is unavailable.
+ * Used by load balancer to stop routing to degraded instances.
  */
 router.get('/ready', async (req, res) => {
+  const redis = req.app?.locals?.redis || null;
   const memory = process.memoryUsage();
-  const dbHealthy = isDBConnected() && mongoose.connection.readyState === 1;
+  const dbHealthy    = isDBConnected() && mongoose.connection.readyState === 1;
   const memoryHealthy = memory.heapUsed < memory.heapTotal * 0.9;
 
-  const allHealthy = dbHealthy && memoryHealthy;
+  // Gap 4 fix: Redis connectivity check.
+  // Redis is critical: nonce dedup, distributed locks, caching, rate limiting all depend on it.
+  // A dead Redis should take this instance OUT of rotation immediately.
+  let redisHealthy = false;
+  if (redis) {
+    try {
+      // Enforce a 1-second timeout so health checks don't hang on a lagging Redis
+      const pong = await Promise.race([
+        redis.ping(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 1000)),
+      ]);
+      redisHealthy = pong === 'PONG';
+    } catch {
+      redisHealthy = false;
+    }
+  } else {
+    // Redis not injected yet (startup race) — degrade but don't hard-fail
+    // This happens only in the first few milliseconds before createApp() is called
+    redisHealthy = true;
+  }
+
+  const allHealthy = dbHealthy && redisHealthy && memoryHealthy;
   const statusCode = allHealthy ? 200 : 503;
 
-  // ID-4: Log full details internally (for ops), but never expose them externally.
-  // Returning DB connection state, Node.js version, or heap sizes enables
-  // infrastructure fingerprinting by attackers.
+  // ID-4: Log full details internally; never expose them externally.
+  // Returning DB/Redis connection state enables infrastructure fingerprinting.
 
   res.status(statusCode).json(response.success({
-    // Only expose: overall status. Nothing else.
     status: allHealthy ? 'ready' : 'degraded',
     timestamp: new Date().toISOString(),
   }));
 });
+
 
 module.exports = router;

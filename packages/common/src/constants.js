@@ -86,6 +86,9 @@ const LEDGER_ACCOUNTS = Object.freeze({
   MERCHANT_WITHDRAWAL: 'merchant_withdrawal',  // Money sent out to merchant
   DISPUTE_HOLD:        'dispute_hold',         // Funds frozen under dispute
   SYSTEM_RESERVE:      'system_reserve',       // System reserve fund
+  REFUND_OUTGOING:     'refund_outgoing',      // Funds sent as refund to customer
+  SETTLEMENT_OUTGOING: 'settlement_outgoing',  // Funds sent as batch settlement
+  GAS_FEE:             'gas_fee',              // TRX burned as transaction fees
 });
 
 const LEDGER_ENTRY_TYPE = Object.freeze({

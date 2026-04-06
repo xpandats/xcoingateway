@@ -24,7 +24,9 @@ const usedNonceSchema = new mongoose.Schema({
 }, {
   collection: 'used_nonces',
   timestamps: false, // Only need usedAt
+  strict: true, // Anti-replay store: never accept unknown injected fields
 });
+
 
 // Unique compound index: same nonce can exist for different merchants
 // but NOT for the same merchant twice.

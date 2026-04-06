@@ -21,9 +21,16 @@ const { validate, schemas, AppError } = require('@xcg/common');
 const { config }   = require('../config');
 const asyncHandler = require('../utils/asyncHandler');
 const MerchantService = require('../services/merchantService');
+const cache        = require('../utils/cache');
 const logger = require('@xcg/logger').createLogger('merchant-ctrl');
 
-const svc = new MerchantService();
+// MerchantService is instantiated with redis in app.js once Redis is connected.
+// Controllers receive redis via req.app.locals.redis (set in server.js startup).
+// We create a lazy accessor so the redis client is always current.
+function getSvc(req) {
+  return new MerchantService({ redis: req.app.locals.redis || null });
+}
+
 
 // ─── Validation schemas ──────────────────────────────────────────────────────
 
@@ -56,7 +63,7 @@ const paginationSchema = Joi.object({
 
 async function createMerchant(req, res) {
   const data = validate(createSchema, req.body);
-  const result = await svc.createMerchant(data, data.userId, {
+  const result = await getSvc(req).createMerchant(data, data.userId, {
     userId: req.user._id,
     ip:     req.ip,
   });
@@ -65,18 +72,18 @@ async function createMerchant(req, res) {
 
 async function listMerchants(req, res) {
   const query  = validate(paginationSchema, req.query);
-  const result = await svc.listMerchants(query);
+  const result = await getSvc(req).listMerchants(query);
   res.json({ success: true, data: result });
 }
 
 async function getMerchant(req, res) {
-  const merchant = await svc.getMerchant(req.params.id);
+  const merchant = await getSvc(req).getMerchant(req.params.id);
   res.json({ success: true, data: { merchant } });
 }
 
 async function updateMerchant(req, res) {
   const data = validate(updateSchema, req.body);
-  const merchant = await svc.updateMerchant(req.params.id, data, {
+  const merchant = await getSvc(req).updateMerchant(req.params.id, data, {
     userId: req.user._id,
     ip:     req.ip,
   });
@@ -86,7 +93,7 @@ async function updateMerchant(req, res) {
 async function setMerchantStatus(req, res) {
   const { isActive } = req.body;
   if (typeof isActive !== 'boolean') throw AppError.badRequest('isActive must be boolean');
-  const merchant = await svc.setMerchantStatus(req.params.id, isActive, {
+  const merchant = await getSvc(req).setMerchantStatus(req.params.id, isActive, {
     userId: req.user._id,
     ip:     req.ip,
   });
@@ -95,7 +102,7 @@ async function setMerchantStatus(req, res) {
 
 async function createApiKey(req, res) {
   const { label } = validate(apiKeySchema, req.body);
-  const result = await svc.createApiKey(req.params.id, label, {
+  const result = await getSvc(req).createApiKey(req.params.id, label, {
     userId: req.user._id,
     ip:     req.ip,
   });
@@ -103,7 +110,7 @@ async function createApiKey(req, res) {
 }
 
 async function revokeApiKey(req, res) {
-  await svc.revokeApiKey(req.params.id, req.params.keyId, {
+  await getSvc(req).revokeApiKey(req.params.id, req.params.keyId, {
     userId: req.user._id,
     ip:     req.ip,
   });
@@ -111,7 +118,7 @@ async function revokeApiKey(req, res) {
 }
 
 async function rotateWebhookSecret(req, res) {
-  const result = await svc.rotateWebhookSecret(req.params.id, {
+  const result = await getSvc(req).rotateWebhookSecret(req.params.id, {
     userId: req.user._id,
     ip:     req.ip,
   });
@@ -193,6 +200,12 @@ async function suspendMerchant(req, res) {
   merchant.isActive       = false;
   merchant.approvalStatus = 'suspended';
   await merchant.save();
+
+  // Cache invalidation: suspendMerchant bypasses MerchantService so we must
+  // invalidate here manually. A suspended merchant's API keys must stop working immediately.
+  const redis  = req.app.locals.redis || null;
+  const keyIds = (merchant.apiKeys || []).map((k) => k.keyId);
+  await cache.invalidateMerchant(redis, String(merchant._id), keyIds);
 
   const { AuditLog } = require('@xcg/database');
   await AuditLog.create({

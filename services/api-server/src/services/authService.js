@@ -26,7 +26,7 @@ const bcrypt = require('bcrypt');
 const crypto = require('crypto');
 const mongoose = require('mongoose');
 const { TOTP, generateSecret } = require('otplib');
-const { User, RefreshToken, UsedTotpCode, AuditLog } = require('@xcg/database');
+const { User, RefreshToken, UsedTotpCode, AuditLog, LoginEvent } = require('@xcg/database');
 const { AppError, ErrorCodes, constants, getRequestContext, validateObjectId } = require('@xcg/common');
 const { encrypt, decrypt, randomHex } = require('@xcg/crypto');
 const { createLogger, createAuditLogger } = require('@xcg/logger');
@@ -236,6 +236,11 @@ async function login(data, ip, userAgent) {
 
   // Same error for wrong email vs wrong password (anti-enumeration)
   if (!user) {
+    // Non-blocking: record failed login attempt for IP forensics
+    LoginEvent.create({
+      email: data.email, result: 'failed_password', ipAddress: ip || 'unknown',
+      userAgent, totpRequired: false, totpProvided: false,
+    }).catch(() => {});
     throw AppError.unauthorized('Invalid credentials', ErrorCodes.AUTH_INVALID_CREDENTIALS);
   }
 
@@ -245,6 +250,10 @@ async function login(data, ip, userAgent) {
       resourceId: user._id.toString(),
       metadata: { reason: 'account_disabled' },
     });
+    LoginEvent.create({
+      userId: user._id, email: data.email, role: user.role,
+      result: 'account_disabled', ipAddress: ip || 'unknown', userAgent,
+    }).catch(() => {});
     throw AppError.unauthorized('Account is disabled', ErrorCodes.AUTH_ACCOUNT_DISABLED);
   }
 
@@ -255,6 +264,11 @@ async function login(data, ip, userAgent) {
       resourceId: user._id.toString(),
       metadata: { reason: 'account_locked' },
     });
+    LoginEvent.create({
+      userId: user._id, email: data.email, role: user.role,
+      result: 'account_locked', ipAddress: ip || 'unknown', userAgent,
+      lockedUntil: user.lockUntil, failedAttempts: user.failedLoginAttempts,
+    }).catch(() => {});
     throw AppError.unauthorized(
       'Account is locked due to too many failed attempts. Try again later.',
       ErrorCodes.AUTH_ACCOUNT_LOCKED,
@@ -365,27 +379,32 @@ async function login(data, ip, userAgent) {
   user.lastLoginIp = crypto.createHash('sha256').update(ip || '').digest('hex').slice(0, 16);
   await user.save();
 
-  // S-4: Anomaly detection — log if new login is from a different IP family
-  const existingTokens = await RefreshToken.find(
-    { userId: user._id, isRevoked: false, expiresAt: { $gt: new Date() } },
-    'ip',
-  ).lean();
+  // Device fingerprint for new-device detection
+  const deviceHash = crypto.createHash('sha256')
+    .update(`${userAgent || ''}:${ip ? ip.split('.').slice(0, 3).join('.') : ''}`)
+    .digest('hex').slice(0, 16);
+  const isKnownDevice = await LoginEvent.isKnownDeviceForUser(user._id, deviceHash);
 
-  if (existingTokens.length > 0) {
-    const isNewIp = existingTokens.every((t) => t.ip !== ip);
-    if (isNewIp) {
-      logger.warn('AUTH ANOMALY: New login from previously unseen IP — possible account compromise', {
-        userId: user._id,
-        newIp: ip ? crypto.createHash('sha256').update(ip).digest('hex').slice(0, 8) : 'unknown',
-        activeSessions: existingTokens.length,
-      });
-      await _audit(AUDIT_ACTIONS.AUTH_LOGIN_SUCCESS, {
-        actor: user._id.toString(),
-        resourceId: user._id.toString(),
-        metadata: { anomaly: 'new_ip_login', activeSessions: existingTokens.length },
-      });
-    }
+  // S-4: Anomaly detection — check if IP is new (replaces RefreshToken scan)
+  const isNewIp = !(await LoginEvent.findOne({
+    userId: user._id, ipAddress: ip, result: 'success',
+  }).select('_id').lean());
+
+  if (isNewIp || !isKnownDevice) {
+    logger.warn('AUTH ANOMALY: Login from new IP or device', {
+      userId: user._id, isNewIp, isKnownDevice,
+      ipHash: ip ? crypto.createHash('sha256').update(ip).digest('hex').slice(0, 8) : 'unknown',
+    });
   }
+
+  // Create LoginEvent — success
+  LoginEvent.create({
+    userId: user._id, email: data.email, role: user.role,
+    result: 'success', ipAddress: ip || 'unknown', userAgent, deviceHash,
+    isKnownDevice, isNewIp,
+    totpRequired: user.twoFactorEnabled, totpProvided: !!data.totpCode,
+    failedAttempts: 0,
+  }).catch(() => {});
 
   const accessToken = _generateAccessToken(user, ip);
   const refreshTokenValue = _generateRefreshTokenValue();

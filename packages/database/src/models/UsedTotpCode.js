@@ -16,7 +16,9 @@ const usedTotpCodeSchema = new mongoose.Schema({
 }, {
   timestamps: false,
   collection: 'used_totp_codes',
+  strict: true, // 2FA replay prevention: never accept unknown fields
 });
+
 
 // Compound unique index: same user can't use same code twice
 usedTotpCodeSchema.index({ userId: 1, code: 1 }, { unique: true });

@@ -20,12 +20,20 @@ const mongoose = require('mongoose');
 const {
   Invoice, Transaction, Withdrawal, LedgerEntry, Wallet, Merchant, AuditLog,
 } = require('@xcg/database');
-const { validate, AppError } = require('@xcg/common');
-const { INVOICE_STATUS, WITHDRAWAL_STATUS } = require('@xcg/common').constants;
+const { validate, AppError, money } = require('@xcg/common');
+const { INVOICE_STATUS, WITHDRAWAL_STATUS, LEDGER_ACCOUNTS } = require('@xcg/common').constants;
+const { v4: uuidv4 } = require('uuid');
 const asyncHandler = require('../utils/asyncHandler');
 const { config }   = require('../config');
 
 const logger = require('@xcg/logger').createLogger('admin-ctrl');
+
+// Withdrawal eligible publisher — injected at startup (same pattern as invoiceController)
+// Required to push approved withdrawals into the processing queue
+let withdrawalEligiblePublisher = null;
+function setWithdrawalEligiblePublisher(publisher) {
+  withdrawalEligiblePublisher = publisher;
+}
 
 const PAUSE_WITHDRAWALS_KEY = 'xcg:system:withdrawals_paused';
 
@@ -201,18 +209,82 @@ async function approveWithdrawal(req, res) {
   }
 
   if (action === 'approve') {
-    withdrawal.status     = WITHDRAWAL_STATUS.APPROVED;
+    // Set back to 'requested' so the withdrawal engine processor's idempotency guard
+    // sees it and calls _triggerSigning() — the ledger is already debited by the API
+    withdrawal.status     = 'requested';
     withdrawal.approvedBy = req.user._id;
     withdrawal.approvedAt = new Date();
     withdrawal.reviewNotes = reviewNotes || '';
-  } else {
-    withdrawal.status     = WITHDRAWAL_STATUS.REJECTED;
-    withdrawal.rejectedBy = req.user._id;
-    withdrawal.rejectedAt = new Date();
-    withdrawal.reviewNotes = reviewNotes || '';
-  }
+    await withdrawal.save();
 
-  await withdrawal.save();
+    // Publish to withdrawal engine queue (non-blocking — failure is logged + alerted)
+    if (withdrawalEligiblePublisher) {
+      withdrawalEligiblePublisher.publish(
+        {
+          merchantId:     String(withdrawal.merchantId),
+          amount:         String(withdrawal.amount),
+          idempotencyKey: withdrawal.idempotencyKey,
+        },
+        withdrawal.idempotencyKey,
+      ).catch((err) => logger.error('AdminCtrl: failed to publish approved withdrawal to queue', {
+        withdrawalId: withdrawal.withdrawalId, error: err.message,
+      }));
+    } else {
+      logger.error('AdminCtrl: withdrawalEligiblePublisher not set — approved withdrawal NOT queued', {
+        withdrawalId: withdrawal.withdrawalId,
+      });
+    }
+
+  } else {
+    // REJECT: status = rejected + reverse the ledger debit atomically
+    // The API already debited merchant_receivable → merchant_withdrawal when the withdrawal was created.
+    // Rejection must undo this: credit merchant_receivable back and debit merchant_withdrawal.
+    const session = await mongoose.startSession();
+    try {
+      await session.withTransaction(async () => {
+        const reverseDebitId  = `led_${uuidv4().replace(/-/g, '')}`;
+        const reverseCreditId = `led_${uuidv4().replace(/-/g, '')}`;
+
+        // Restore funds to merchant_receivable
+        await LedgerEntry.create([
+          {
+            entryId:            reverseCreditId,
+            account:            LEDGER_ACCOUNTS ? LEDGER_ACCOUNTS.MERCHANT_RECEIVABLE : 'merchant_receivable',
+            type:               'credit',
+            amount:             withdrawal.amount,
+            currency:           'USDT',
+            merchantId:         withdrawal.merchantId,
+            withdrawalId:       withdrawal._id,
+            counterpartEntryId: reverseDebitId,
+            description:        `Withdrawal rejected — funds returned — ${withdrawal.withdrawalId}`,
+            idempotencyKey:     `ledger:wdl-reject-credit:${withdrawal.idempotencyKey}`,
+            balanceAfter:       0, // Reconciliation will compute accurate running balance
+          },
+          {
+            entryId:            reverseDebitId,
+            account:            'merchant_withdrawal',
+            type:               'debit',
+            amount:             withdrawal.amount,
+            currency:           'USDT',
+            merchantId:         withdrawal.merchantId,
+            withdrawalId:       withdrawal._id,
+            counterpartEntryId: reverseCreditId,
+            description:        `Withdrawal rejection reversal — ${withdrawal.withdrawalId}`,
+            idempotencyKey:     `ledger:wdl-reject-debit:${withdrawal.idempotencyKey}`,
+            balanceAfter:       0,
+          },
+        ], { session });
+
+        withdrawal.status      = WITHDRAWAL_STATUS.REJECTED;
+        withdrawal.rejectedBy  = req.user._id;
+        withdrawal.rejectedAt  = new Date();
+        withdrawal.reviewNotes = reviewNotes || '';
+        await withdrawal.save({ session });
+      });
+    } finally {
+      await session.endSession();
+    }
+  }
 
   // Audit log
   await AuditLog.create({
@@ -451,4 +523,5 @@ module.exports = {
   listAllInvoices:        asyncHandler(listAllInvoices),
   getInvoiceDetail:       asyncHandler(getInvoiceDetail),
   adminCancelInvoice:     asyncHandler(adminCancelInvoice),
+  setWithdrawalEligiblePublisher,
 };

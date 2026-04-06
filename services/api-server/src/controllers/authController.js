@@ -185,10 +185,13 @@ exports.me = async (req, res, next) => {
 exports.setup2FA = async (req, res, next) => {
   try {
     const result = await authService.setup2FA(req.user.userId);
+    // SECURITY: Never return the raw TOTP secret in the API response.
+    // Exposing it allows any interceptor to permanently clone the 2FA authenticator.
+    // The client scans the QR code or uses the otpAuthUrl instead.
     res.json(response.success({
-      secret: result.secret,
-      otpAuthUrl: result.otpAuthUrl,
-      warning: 'Save this secret securely. It will NOT be shown again.',
+      otpAuthUrl:  result.otpAuthUrl,
+      qrCode:      result.qrCode,     // base64-encoded PNG — safe, no seed exposed
+      warning: 'Store your authenticator QR code securely. This will NOT be shown again.',
     }));
   } catch (err) {
     next(err);

@@ -3,5 +3,17 @@
   "version": "0.1.0",
   "private": true,
   "main": "index.js",
-  "description": "Shared utilities — errors, constants, validation, RBAC"
+  "description": "Shared utilities — errors, constants, validation, RBAC, circuit breaker, Redis factory, shutdown",
+  "scripts": {
+    "test": "jest --testEnvironment=node --detectOpenHandles --forceExit",
+    "test:coverage": "jest --coverage --testEnvironment=node --detectOpenHandles --forceExit"
+  },
+  "jest": {
+    "testMatch": ["**/tests/**/*.test.js"],
+    "verbose": true,
+    "testTimeout": 10000
+  },
+  "devDependencies": {
+    "jest": "^30.3.0"
+  }
 }

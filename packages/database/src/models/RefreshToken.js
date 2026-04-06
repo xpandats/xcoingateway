@@ -24,7 +24,9 @@ const refreshTokenSchema = new mongoose.Schema({
 }, {
   timestamps: true,
   collection: 'refresh_tokens',
+  strict: true, // Reject unknown fields — token security model must not accept arbitrary data
 });
+
 
 // G3 FIX: expireAfterSeconds:0 means MongoDB deletes the document exactly when expiresAt passes.
 // Previous value of 86400 added a 24-hour grace period — tokens sat in DB 24h after expiry.

@@ -35,7 +35,7 @@ module.exports = {
       restart_delay:      3000,
       max_memory_restart: '512M',
       watch:              false,
-      kill_timeout:       10000,        // 10s graceful shutdown
+      kill_timeout:       35000,        // 35s — must be > shutdown.js FORCE_KILL_TIMEOUT_MS (30s)
       error_file:         '/var/log/xcg/api-server.err.log',
       out_file:           '/var/log/xcg/api-server.out.log',
       merge_logs:         true,
@@ -68,7 +68,7 @@ module.exports = {
       restart_delay:      5000,
       max_memory_restart: '256M',
       watch:              false,
-      kill_timeout:       10000,
+      kill_timeout:       35000,        // 35s — must be > shutdown.js FORCE_KILL_TIMEOUT_MS (30s)
       error_file:         '/var/log/xcg/blockchain-listener.err.log',
       out_file:           '/var/log/xcg/blockchain-listener.out.log',
       merge_logs:         true,
@@ -90,7 +90,7 @@ module.exports = {
       restart_delay:      3000,
       max_memory_restart: '256M',
       watch:              false,
-      kill_timeout:       15000,        // Longer — allow in-flight transaction to complete
+      kill_timeout:       35000,        // 35s — must be > shutdown.js FORCE_KILL_TIMEOUT_MS (30s)
       error_file:         '/var/log/xcg/matching-engine.err.log',
       out_file:           '/var/log/xcg/matching-engine.out.log',
       merge_logs:         true,
@@ -111,7 +111,7 @@ module.exports = {
       restart_delay:      5000,
       max_memory_restart: '256M',
       watch:              false,
-      kill_timeout:       15000,        // Allow in-flight withdrawal to finish
+      kill_timeout:       35000,        // 35s — must be > shutdown.js FORCE_KILL_TIMEOUT_MS (30s)
       error_file:         '/var/log/xcg/withdrawal-engine.err.log',
       out_file:           '/var/log/xcg/withdrawal-engine.out.log',
       merge_logs:         true,
@@ -132,7 +132,7 @@ module.exports = {
       restart_delay:      3000,
       max_memory_restart: '256M',
       watch:              false,
-      kill_timeout:       10000,
+      kill_timeout:       35000,        // 35s — must be > shutdown.js FORCE_KILL_TIMEOUT_MS (30s)
       error_file:         '/var/log/xcg/notification-service.err.log',
       out_file:           '/var/log/xcg/notification-service.out.log',
       merge_logs:         true,

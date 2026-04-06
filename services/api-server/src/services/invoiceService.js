@@ -11,18 +11,28 @@
 
 const crypto      = require('crypto');
 const { v4: uuidv4 } = require('uuid');
-const { Invoice }  = require('@xcg/database');
+const { Invoice, WalletAssignment } = require('@xcg/database');
 const { AppError, money } = require('@xcg/common');
 const { INVOICE_STATUS } = require('@xcg/common').constants;
 const { config }   = require('../config');
+const cache        = require('../utils/cache');
+
 
 const MAX_OFFSET_RETRIES = 10;
 
 class InvoiceService {
-  constructor({ walletService, logger }) {
+  /**
+   * @param {object} opts
+   * @param {object} opts.walletService
+   * @param {object} opts.logger
+   * @param {object|null} [opts.redis=null] - IORedis client for slot cache
+   */
+  constructor({ walletService, logger, redis = null }) {
     this.walletService = walletService;
     this.logger        = logger;
+    this.redis         = redis;
   }
+
 
   /**
    * Create a new payment invoice.
@@ -83,32 +93,68 @@ class InvoiceService {
       });
     }
 
+    // Track wallet assignment for load balancing metrics (non-blocking)
+    if (created) {
+      WalletAssignment.create({
+        walletId:    wallet._id,
+        invoiceId:   invoice._id,
+        merchantId:  merchant._id,
+        network:     'tron',
+        assignedAt:  new Date(),
+        expiresAt:   expiresAt,
+        status:      'active',
+        selectionReason: 'round_robin',
+      }).catch((e) => this.logger.debug('InvoiceService: WalletAssignment write failed', { error: e.message }));
+    }
+
     return invoice.toSafeJSON ? invoice.toSafeJSON() : invoice.toObject();
   }
 
   /**
    * Reserve a unique USDT amount via crypto-random offset.
-   * Retries up to 10 times on collision.
    *
-   * Hardcoded range: 0.000001–0.009999
-   * Provides 9,998 unique slots per base amount per wallet.
+   * Two-layer collision prevention (Gap 2 fix):
+   *   Layer 1 — Redis slot cache: Redis NX check is O(1) and avoids a DB query
+   *     entirely for already-occupied slots. Under load (burst of invoice creation
+   *     for the same wallet) this eliminates most MongoDB collision queries.
+   *   Layer 2 — MongoDB: authoritative source. Always checked after Redis says free,
+   *     because Redis has a TTL and could miss a slot reserved before Redis was added.
+   *
+   * On Redis failure: falls through to MongoDB-only mode (fail-open).
    */
   async _reserveUniqueAmount(baseAmount, walletAddress) {
     const MIN_OFFSET  = 0.000001;
     const MAX_OFFSET  = 0.009999;
+    // INVOICE_SLOT TTL: slightly longer than invoice expiry to cover edge cases
+    const slotTtl = Math.ceil((config.invoice.expiryMs || 1_200_000) / 1000) + 120;
 
     for (let attempt = 0; attempt < MAX_OFFSET_RETRIES; attempt++) {
       const range  = MAX_OFFSET - MIN_OFFSET;
       const random = crypto.randomBytes(4).readUInt32BE(0) / 0xFFFFFFFF;
       const offset = money.round(MIN_OFFSET + (random * range), 6);
 
-      // Use BigInt arithmetic to avoid float imprecision
       const baseInt    = BigInt(Math.round(baseAmount * 1_000_000));
       const offsetInt  = BigInt(Math.round(offset * 1_000_000));
       const totalInt   = baseInt + offsetInt;
       const uniqueAmount = Number(totalInt) / 1_000_000;
 
-      // Check for collisions against active invoices on this wallet
+      // Layer 1: Redis slot check (fast, no DB touch)
+      const redisSlotFree = await cache.reserveInvoiceSlot(
+        this.redis,
+        walletAddress,
+        uniqueAmount,
+        slotTtl,
+      );
+
+      if (!redisSlotFree) {
+        // Slot is already reserved in Redis — skip without DB query
+        this.logger.debug('InvoiceService: slot occupied in Redis cache, retrying', {
+          attempt, uniqueAmount,
+        });
+        continue;
+      }
+
+      // Layer 2: MongoDB authoritative check
       const conflict = await Invoice.findOne({
         uniqueAmount,
         walletAddress,
@@ -117,10 +163,16 @@ class InvoiceService {
       }).select('_id').lean();
 
       if (!conflict) {
+        // Both Redis and DB say free — slot is ours
         return { uniqueAmount, offset };
       }
 
-      this.logger.debug('InvoiceService: unique amount collision, retrying', { attempt, uniqueAmount });
+      // DB found a conflict that Redis didn't know about — release our Redis reservation
+      // and try again. (This happens when invoice was created before Redis cache was added.)
+      await cache.releaseInvoiceSlot(this.redis, walletAddress, uniqueAmount);
+      this.logger.debug('InvoiceService: DB conflict found, cleared Redis reservation, retrying', {
+        attempt, uniqueAmount,
+      });
     }
 
     throw AppError.serviceUnavailable(

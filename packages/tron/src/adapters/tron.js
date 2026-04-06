@@ -17,10 +17,27 @@
  *   - All external responses are validated before use
  *   - Timeouts enforced on every outbound request (10s)
  *   - Provider rotation on failure
+ *
+ * CIRCUIT BREAKER (Gap 6):
+ *   All outbound HTTP calls go through _request(), which is wrapped in
+ *   tronBreaker.execute(). After 3 consecutive failures (primary + fallback
+ *   both down), the circuit opens and all callers receive CircuitOpenError
+ *   immediately instead of waiting 10s per attempt per call.
+ *   The api-server error handler converts CircuitOpenError → 503 + Retry-After.
  */
 
 const axios = require('axios');
 const BlockchainAdapter = require('./base');
+// Lazy-loaded singleton: shared across all services that import TronAdapter
+// (blockchain-listener, withdrawal-engine, signing-service, api-server)
+let _tronBreaker = null;
+function getTronBreaker() {
+  if (!_tronBreaker) {
+    _tronBreaker = require('@xcg/common/src/circuitBreaker').tronBreaker;
+  }
+  return _tronBreaker;
+}
+
 
 // ─── CONSTANTS (NEVER from env — hardcoded for security) ─────────────────────
 
@@ -85,9 +102,14 @@ class TronAdapter extends BlockchainAdapter {
   async _request(path, body = null, method = 'GET') {
     const baseUrl = this._usingFallback ? this.fallbackUrl : this.primaryUrl;
     const url = `${baseUrl}${path}`;
+    const breaker = getTronBreaker();
 
     try {
-      const options = {
+      // Gap 6: Wrap in circuit breaker.
+      // If TronGrid is consistently timing out or returning errors, the breaker
+      // opens after 3 consecutive failures and fast-fails for 20s before probing.
+      // This prevents piling up 10s timeout holds in the event loop.
+      const resp = await breaker.execute(() => axios({
         method,
         url,
         timeout: REQUEST_TIMEOUT_MS,
@@ -96,10 +118,8 @@ class TronAdapter extends BlockchainAdapter {
           'Content-Type': 'application/json',
           'Accept': 'application/json',
         },
-      };
-      if (body) options.data = body;
-
-      const resp = await axios(options);
+        ...(body ? { data: body } : {}),
+      }));
 
       // Reset to primary on success after fallback
       if (this._usingFallback) {
@@ -109,13 +129,15 @@ class TronAdapter extends BlockchainAdapter {
 
       return resp.data;
     } catch (err) {
+      // If circuit is open, propagate immediately — don't try fallback
+      if (err.isCircuitOpen) throw err;
+
       if (!this._usingFallback) {
         this.logger.warn('TronAdapter: primary provider failed, switching to fallback', {
-          error: err.message,
-          url,
+          error: err.message, url,
         });
         this._usingFallback = true;
-        // Retry with fallback
+        // Retry with fallback through the same breaker
         return this._request(path, body, method);
       }
       // Both providers failed
@@ -123,6 +145,7 @@ class TronAdapter extends BlockchainAdapter {
       throw new Error(`TronAdapter: blockchain unavailable — ${err.message}`);
     }
   }
+
 
   // ─── Interface Implementation ────────────────────────────────────────────────
 
@@ -293,36 +316,49 @@ class TronAdapter extends BlockchainAdapter {
    * Get wallet energy balance from TronGrid.
    * Energy is required for TRC20 transfers — without it, TRX is burned as fee.
    *
+   * Uses this._request() for automatic primary/fallback provider rotation,
+   * API key injection, and 10s timeout — same as all other adapter methods.
+   *
    * @param {string} address - Tron wallet address
    * @returns {Promise<{ energy: number, energyLimit: number, bandwidth: number }>}
    */
   async getEnergyBalance(address) {
+    if (!this.isValidAddress(address)) {
+      this.logger.warn('TronAdapter.getEnergyBalance: invalid address supplied', { address });
+      return { energy: 0, energyLimit: 0, bandwidth: 0 };
+    }
+
     try {
-      const url = `${this.baseUrl}/v1/accounts/${address}`;
-      const resp = await axios.get(url, {
-        headers:    this._buildHeaders(),
-        timeout:    REQUEST_TIMEOUT_MS,
-        validateStatus: (s) => s === 200,
-      });
+      // Use _request() — provides API key headers, timeout, and primary/fallback rotation.
+      // Note: TronGrid /v1/accounts/:address returns an array in data[].
+      const data = await this._request(`/v1/accounts/${address}`);
+      const account = Array.isArray(data?.data) ? data.data[0] : null;
 
-      const data = resp.data?.data?.[0];
-      if (!data) return { energy: 0, energyLimit: 0, bandwidth: 0 };
+      if (!account) {
+        // Address has no on-chain activity yet (new wallet) — energy = 0
+        return { energy: 0, energyLimit: 0, bandwidth: 0 };
+      }
 
-      // TronGrid returns energy in account resource
-      const energy      = data.account_resource?.energy_usage_total || 0;
-      const energyLimit = data.account_resource?.EnergyLimit || 0;
-      const bandwidth   = data.free_net_usage || 0;
-      const remainingEnergy = Math.max(0, energyLimit - energy);
+      // TronGrid account_resource fields:
+      //   energy_usage_total — energy consumed in current daily window
+      //   EnergyLimit        — total energy available (from staking/delegation)
+      //   free_net_usage     — bandwidth used (not energy, but useful for diagnostics)
+      const energyUsed  = account.account_resource?.energy_usage_total || 0;
+      const energyLimit = account.account_resource?.EnergyLimit || 0;
+      const bandwidth   = account.free_net_usage || 0;
+      // Remaining energy = total limit minus already consumed in this window
+      const remainingEnergy = Math.max(0, energyLimit - energyUsed);
 
       return { energy: remainingEnergy, energyLimit, bandwidth };
     } catch (err) {
       this.logger.warn('TronAdapter: failed to get energy balance', {
         address, error: err.message,
       });
-      // Fail safe: return 0 — caller will queue withdrawal pending energy check
+      // Fail safe: return 0 — caller will defer the withdrawal pending an energy check
       return { energy: 0, energyLimit: 0, bandwidth: 0 };
     }
   }
+
 
   /**
    * Check if wallet has enough energy for a USDT TRC20 transfer.

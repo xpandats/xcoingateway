@@ -30,6 +30,7 @@ const ledgerEntrySchema = new mongoose.Schema({
   invoiceId: { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice', default: null },
   withdrawalId: { type: mongoose.Schema.Types.ObjectId, ref: 'Withdrawal', default: null },
   transactionId: { type: mongoose.Schema.Types.ObjectId, ref: 'Transaction', default: null },
+  walletId:      { type: mongoose.Schema.Types.ObjectId, ref: 'Wallet', default: null, index: true },
 
   // Double-entry pairing
   counterpartEntryId: { type: String, required: true },

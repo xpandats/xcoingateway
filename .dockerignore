@@ -1,0 +1,77 @@
+# ============================================================
+# XCOINGATEWAY — DOCKER BUILD IGNORE
+# ============================================================
+# Prevents secrets, dev artifacts, and bloat from entering Docker images.
+
+# ─── Secrets (CRITICAL: never bake into image) ───────────────
+.env
+.env.*
+.env.local
+.env.staging
+.env.production
+*.pem
+*.key
+
+# ─── Dependencies (installed fresh via npm ci in Dockerfile) ─
+node_modules/
+
+# ─── Git ─────────────────────────────────────────────────────
+.git/
+.gitignore
+
+# ─── Tests (not needed in production image) ──────────────────
+**/tests/
+**/test/
+**/*.test.js
+**/*.spec.js
+coverage/
+jest.config.*
+
+# ─── IDE / OS ────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ─── Documentation (reduces image size) ──────────────────────
+docs/
+*.md
+*.txt
+*.png
+*.jpg
+LICENSE
+
+# ─── Build / temp ────────────────────────────────────────────
+dist/
+build/
+tmp/
+temp/
+backups/
+
+# ─── Docker internal ────────────────────────────────────────
+docker-compose*.yml
+Dockerfile
+.dockerignore
+
+# ─── CI/CD ───────────────────────────────────────────────────
+.github/
+.husky/
+
+# ─── Agent / workspace ──────────────────────────────────────
+.agents/
+.agent/
+.gemini/
+.antigravityignore
+
+# ─── Landing page / static assets (built separately) ────────
+pages/
+pages.css
+pages.js
+styles.css
+script.js
+index.html
+assets/
+*.png

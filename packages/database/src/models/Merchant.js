@@ -45,7 +45,14 @@ const merchantSchema = new mongoose.Schema({
   webhookEvents: [{ type: String }], // Which events to send
 
   // Withdrawal settings
-  withdrawalAddress: { type: String, default: '' }, // TRC20 address
+  withdrawalAddress: {
+    type: String,
+    default: '',
+    validate: {
+      validator: (v) => !v || /^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(v),
+      message: 'withdrawalAddress must be a valid TRC20 address (starts with T, 34 chars)',
+    },
+  }, // TRC20 address
   withdrawalAddressVerified: { type: Boolean, default: false },
   autoWithdrawal: { type: Boolean, default: false },
   autoWithdrawalThreshold: { type: Number, default: 100 }, // USDT
@@ -59,13 +66,19 @@ const merchantSchema = new mongoose.Schema({
   ipWhitelist: [{ type: String }],
   ipWhitelistEnabled: { type: Boolean, default: false },
 
-  // Stats (cached, updated periodically)
+  // Stats (periodically updated by background job, NOT used for financial decisions)
+  // WARNING: Never use stats.* for balance/limit checks. Always use LedgerEntry.aggregate().
+  // See: withdrawal-engine/src/processor.js _getDailyWithdrawalTotal() for the correct approach.
   stats: {
-    totalReceived: { type: Number, default: 0 },
-    totalWithdrawn: { type: Number, default: 0 },
-    totalInvoices: { type: Number, default: 0 },
+    totalReceived:   { type: Number, default: 0 },
+    totalWithdrawn:  { type: Number, default: 0 },
+    totalInvoices:   { type: Number, default: 0 },
     totalSuccessful: { type: Number, default: 0 },
   },
+  // NOTE: NO cached dailyWithdrawalUsed field — that was a Gap-5 bug.
+  // Daily withdrawal total is computed on-demand via LedgerEntry.aggregate() in the
+  // withdrawal processor. Caching it here risks stale data causing wrong daily cap decisions.
+
 }, {
   timestamps: true,
   collection: 'merchants',

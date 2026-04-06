@@ -74,26 +74,31 @@ const fraudEventSchema = new mongoose.Schema({
   strict:     true,
 });
 
-// Block all mutations — fraud log is immutable
-fraudEventSchema.pre('findOneAndUpdate', function () {
-  throw new Error('SECURITY: FraudEvent is immutable — no updates allowed');
+// Block all mutations — fraud log is immutable.
+// SECURITY: Use next(err) not throw — `throw` is unreliable in Mongoose pre hooks
+// across all query contexts and Mongoose versions. next(err) is the documented API.
+fraudEventSchema.pre('findOneAndUpdate', function (next) {
+  next(new Error('SECURITY: FraudEvent is immutable — no updates allowed'));
 });
-fraudEventSchema.pre('updateOne', function () {
-  throw new Error('SECURITY: FraudEvent is immutable — no updates allowed');
+fraudEventSchema.pre('updateOne', function (next) {
+  next(new Error('SECURITY: FraudEvent is immutable — no updates allowed'));
 });
-fraudEventSchema.pre('updateMany', function () {
-  throw new Error('SECURITY: FraudEvent is immutable — no updates allowed');
+fraudEventSchema.pre('updateMany', function (next) {
+  next(new Error('SECURITY: FraudEvent is immutable — no updates allowed'));
 });
-fraudEventSchema.pre('deleteOne', function () {
-  throw new Error('SECURITY: FraudEvent is immutable — no deletes allowed');
+fraudEventSchema.pre('deleteOne', function (next) {
+  next(new Error('SECURITY: FraudEvent is immutable — no deletes allowed'));
 });
-fraudEventSchema.pre('deleteMany', function () {
-  throw new Error('SECURITY: FraudEvent is immutable — no deletes allowed');
+fraudEventSchema.pre('deleteMany', function (next) {
+  next(new Error('SECURITY: FraudEvent is immutable — no deletes allowed'));
 });
-// G5 FIX: Was missing findOneAndReplace — complete the immutability surface
-fraudEventSchema.pre('findOneAndReplace', function () {
-  throw new Error('SECURITY: FraudEvent is immutable — no replace allowed');
+fraudEventSchema.pre('findOneAndDelete', function (next) {
+  next(new Error('SECURITY: FraudEvent is immutable — no deletes allowed'));
 });
+fraudEventSchema.pre('findOneAndReplace', function (next) {
+  next(new Error('SECURITY: FraudEvent is immutable — no replace allowed'));
+});
+
 
 fraudEventSchema.index({ merchantId: 1, createdAt: -1 });
 fraudEventSchema.index({ fromAddress: 1, createdAt: -1 });

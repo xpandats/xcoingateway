@@ -7,8 +7,11 @@ const { connectDB }                             = require('@xcg/database');
 const { createLogger }                          = require('@xcg/logger');
 const { createConsumer, createPublisher, QUEUES } = require('@xcg/queue');
 const { startHealthServer }                     = require('@xcg/common/src/healthServer');
-const IORedis                                   = require('ioredis');
+const { createRedisClient }                     = require('@xcg/common/src/redisFactory');
+const { registerShutdown, runMain }             = require('@xcg/common/src/shutdown');
 const mongoose                                  = require('mongoose');
+
+
 const WebhookDeliveryEngine                     = require('./webhookDelivery');
 const AlertService                              = require('./alerts');
 
@@ -19,8 +22,9 @@ async function main() {
   try { validateConfig(); } catch (err) { logger.error('NotificationService: config failed', { error: err.message }); process.exit(1); }
 
   await connectDB(config.db.uri, logger);
-  const redis = new IORedis(config.redis.url, { maxRetriesPerRequest: null });
+  const redis = createRedisClient({ logger }); // Gap 5: Sentinel/Cluster-aware
   redis.on('error', (err) => logger.error('NotificationService: Redis error', { error: err.message }));
+
 
   // Health check server (internal only — port 3095)
   startHealthServer({ port: 3095, service: 'notification-service', mongoose, redis, logger });
@@ -73,20 +77,19 @@ async function main() {
     { concurrency: 5 },
   );
 
-  async function shutdown(signal) {
-    logger.info(`NotificationService: ${signal}`);
-    await confirmWorker.close();
-    await failedWorker.close();
-    await createdWorker.close();
-    await alertWorker.close();
-    await redis.quit();
-    process.exit(0);
-  }
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('SIGINT',  () => shutdown('SIGINT'));
-  process.on('uncaughtException',  (err) => { logger.error('NotificationService: uncaught', { error: err.message }); process.exit(1); });
-  process.on('unhandledRejection', (r)   => { logger.error('NotificationService: rejection', { reason: String(r) }); process.exit(1); });
+  registerShutdown({
+    logger,
+    service: 'notification-service',
+    cleanup: async () => {
+      await confirmWorker.close();
+      await failedWorker.close();
+      await createdWorker.close();
+      await alertWorker.close();
+      await redis.quit();
+    },
+  });
 
   logger.info('NotificationService: running — consuming PAYMENT_CONFIRMED, PAYMENT_FAILED, PAYMENT_CREATED, SYSTEM_ALERT');
 }
-main().catch((err) => { console.error('NotificationService: fatal', err.message); process.exit(1); });
+runMain(main, { logger, service: 'notification-service' });
+

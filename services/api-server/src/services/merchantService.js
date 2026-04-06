@@ -27,6 +27,7 @@ const { Merchant, AuditLog } = require('@xcg/database');
 const { AppError } = require('@xcg/common');
 const { encrypt, decrypt, generateApiKey, generateApiSecret, generateWebhookSecret } = require('@xcg/crypto');
 const { config }  = require('../config');
+const cache       = require('../utils/cache');
 
 const logger = require('@xcg/logger').createLogger('merchant-svc');
 
@@ -34,6 +35,15 @@ const logger = require('@xcg/logger').createLogger('merchant-svc');
 const MAX_API_KEYS = 5;
 
 class MerchantService {
+  /**
+   * @param {object} [redis] - Optional IORedis client for cache invalidation.
+   *   Must be injected at construction (e.g. in app.js or controller factory).
+   *   If null/undefined, cache invalidation is skipped (cache will expire by TTL).
+   */
+  constructor({ redis = null } = {}) {
+    this.redis = redis;
+  }
+
 
   // ─── Create Merchant ────────────────────────────────────────────────────────
 
@@ -200,6 +210,9 @@ class MerchantService {
 
     await merchant.save();
 
+    // Invalidate merchant profile cache — new key count changed
+    await cache.invalidateMerchant(this.redis, String(merchantId));
+
     await AuditLog.create({
       actor:      String(actor.userId),
       action:     'api_key_created',
@@ -240,6 +253,10 @@ class MerchantService {
     keyEntry.isActive = false;
 
     await merchant.save();
+
+    // Immediately invalidate the auth cache for this keyId.
+    // Without this, the revoked key would continue to authenticate for up to 5 minutes.
+    await cache.invalidateMerchant(this.redis, String(merchantId), [keyId]);
 
     await AuditLog.create({
       actor:      String(actor.userId),
@@ -294,6 +311,14 @@ class MerchantService {
       { new: true },
     );
     if (!merchant) throw AppError.notFound('Merchant not found');
+
+    // If merchant is being deactivated, bust ALL cached auth entries for their keys.
+    // Without this, a suspended merchant's keys would continue to authenticate
+    // for up to 5 minutes (cache TTL). Security requires immediate effect.
+    if (!isActive) {
+      const keyIds = (merchant.apiKeys || []).map((k) => k.keyId);
+      await cache.invalidateMerchant(this.redis, String(merchantId), keyIds);
+    }
 
     await AuditLog.create({
       actor:      String(actor.userId),

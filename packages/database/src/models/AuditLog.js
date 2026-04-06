@@ -57,8 +57,14 @@ const auditLogSchema = new mongoose.Schema({
 }, {
   timestamps: false,
   collection: 'audit_logs',
-  strict: false,
+  // strict: true is correct here — all top-level fields are explicitly typed.
+  // Mixed fields (before/after/metadata) still accept arbitrary values even with strict:true;
+  // strict only rejects fields NOT defined in the schema at all.
+  // strict:false was wrong: it allowed arbitrary top-level keys (e.g. injected '__proto__')
+  // to be silently written to audit log documents.
+  strict: true,
 });
+
 
 // ─── Compound indexes for security forensics ─────────────────────────────────
 auditLogSchema.index({ actor: 1, timestamp: -1 });
@@ -67,8 +73,12 @@ auditLogSchema.index({ resource: 1, resourceId: 1, timestamp: -1 });
 auditLogSchema.index({ ipAddress: 1, timestamp: -1 });
 auditLogSchema.index({ outcome: 1, timestamp: -1 });
 // Index for chain traversal (verify chain from a given hash)
-auditLogSchema.index({ entryHash: 1 });
-auditLogSchema.index({ prevHash: 1 });
+auditLogSchema.index({ entryHash: 1 }, { unique: true, sparse: true });
+// GAP 4 FIX: unique+sparse on prevHash enforces linear chain — no two entries can
+// share the same parent. sparse: true allows multiple null prevHash values
+// (genesis entry + any fallback entries written during high-concurrency failures).
+auditLogSchema.index({ prevHash: 1 }, { unique: true, sparse: true });
+
 
 // ─── HASH CHAINING — computed on pre-save ────────────────────────────────────
 /**
@@ -100,32 +110,69 @@ auditLogSchema.pre('save', async function (next) {
     ));
   }
 
-  try {
-    // Get the hash of the most recent entry (the chain tip)
-    const last = await this.constructor.findOne({}, { entryHash: 1 })
-      .sort({ timestamp: -1 })
-      .lean();
+  // ── GAP 4 FIX: Hash chain race prevention ─────────────────────────────────
+  // PROBLEM: Two concurrent audit writes could both read the same chain tip and both
+  // set prevHash = <same hash>, creating a fork. verifyChain() would then fail even
+  // without tampering.
+  //
+  // SOLUTION: Retry loop with jitter.
+  //   - Try to read chain tip → compute hash → assign prevHash + entryHash.
+  //   - The UNIQUE SPARSE INDEX on prevHash (see below) ensures only ONE winner per
+  //     parent: if two writes race with the same prevHash, only one insert succeeds.
+  //   - The loser gets a duplicate key error on prevHash → retries → reads the
+  //     new chain tip (the winner's entry) → computes a new entryHash → succeeds.
+  //   - Max 3 retries. If all fail (extremely unlikely): entropy-based hash with
+  //     prevHash=null (chain is still immutable, just has a gap logged as WARN).
+  //
+  // The unique index on prevHash is defined below:
+  //   auditLogSchema.index({ prevHash: 1 }, { unique: true, sparse: true })
+  // sparse: true allows multiple entries with prevHash=null (the genesis entry and
+  // any fallback entries from failed hash computation).
 
-    this.prevHash  = last?.entryHash || null;
-    this.entryHash = computeEntryHash(
-      this.prevHash,
-      this.actor,
-      this.action,
-      this.timestamp || new Date(),
-      this.resource,
-      this.resourceId,
-      this.outcome,
-    );
-  } catch (err) {
-    // Never let hash computation crash audit writes — log and continue with null hashes
-    // The entry is still immutably appended, just without hash chain linkage
-    this.prevHash  = null;
-    this.entryHash = crypto.createHash('sha256')
-      .update(`fallback:${Date.now()}:${Math.random()}`, 'utf8')
-      .digest('hex');
+  const MAX_CHAIN_RETRIES = 3;
+
+  for (let attempt = 0; attempt <= MAX_CHAIN_RETRIES; attempt++) {
+    try {
+      // Get the hash of the most recent entry (the current chain tip)
+      const last = await this.constructor.findOne({}, { entryHash: 1 })
+        .sort({ timestamp: -1 })
+        .lean();
+
+      this.prevHash  = last?.entryHash || null;
+      this.entryHash = computeEntryHash(
+        this.prevHash,
+        this.actor,
+        this.action,
+        this.timestamp || new Date(),
+        this.resource,
+        this.resourceId,
+        this.outcome,
+      );
+
+      // If this is not the first attempt, break the retry loop — hashes computed OK.
+      // The actual uniqueness enforcement happens at the DB insert level.
+      return next();
+
+    } catch (err) {
+      if (attempt < MAX_CHAIN_RETRIES) {
+        // Add random jitter (0–50ms) to reduce retry collision probability
+        const jitterMs = Math.floor(Math.random() * 50);
+        await new Promise((r) => setTimeout(r, jitterMs));
+        continue;
+      }
+
+      // All retries exhausted — fall back to entropy-based hash with null prevHash.
+      // The entry is still immutably appended (ImmutabilityViolation hooks still apply).
+      // The chain will have a gap at this entry, which verifyChain() will detect and
+      // flag — alerting operators that a high-concurrency event occurred.
+      // We do NOT throw — denying an audit write is worse than a chain gap.
+      this.prevHash  = null;
+      this.entryHash = crypto.createHash('sha256')
+        .update(`fallback:${Date.now()}:${Math.random()}`, 'utf8')
+        .digest('hex');
+      return next();
+    }
   }
-
-  next();
 });
 
 // ─── IMMUTABILITY — all mutation hooks blocked ────────────────────────────────

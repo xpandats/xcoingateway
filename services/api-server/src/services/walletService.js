@@ -17,11 +17,20 @@ const crypto    = require('crypto');
 const { Wallet, AuditLog } = require('@xcg/database');
 const { AppError }    = require('@xcg/common');
 const { encrypt }     = require('@xcg/crypto');
+const cache           = require('../utils/cache');
+
 
 class WalletService {
-  constructor({ logger }) {
+  /**
+   * @param {object} opts
+   * @param {object} opts.logger
+   * @param {object|null} [opts.redis=null] - IORedis client for cache invalidation
+   */
+  constructor({ logger, redis = null }) {
     this.logger = logger;
+    this.redis  = redis;
   }
+
 
   /**
    * Add a new receiving wallet.
@@ -69,12 +78,16 @@ class WalletService {
       timestamp:  new Date(),
     });
 
+    // Invalidate active wallet list cache — new wallet must be visible to listener/engine
+    await cache.invalidateWallets(this.redis);
+
     this.logger.info('WalletService: wallet added', {
       address, network, addedBy: String(actor.userId),
     });
 
     return wallet.toSafeJSON();
   }
+
 
   /**
    * List wallets (no sensitive fields).
@@ -122,8 +135,14 @@ class WalletService {
       timestamp:  new Date(),
     });
 
+    // Invalidate active wallet list — deactivated wallet must stop receiving payments
+    // immediately. A stale cache entry here would cause the listener to still route
+    // incoming transfers to a disabled wallet.
+    await cache.invalidateWallets(this.redis);
+
     return wallet.toSafeJSON();
   }
+
 
   /**
    * Get on-chain USDT balance from blockchain.
@@ -138,7 +157,7 @@ class WalletService {
     const balance = await tronAdapter.getUSDTBalance(wallet.address);
     const balanceFloat = parseFloat(balance);
 
-    // Update cached balance (atomic set — OK here since this is a sync operation)
+    // Update cached balance (atomic set)
     await Wallet.findByIdAndUpdate(walletId, {
       $set: {
         'balance.usdt': balanceFloat,
@@ -146,24 +165,43 @@ class WalletService {
       },
     });
 
+    // Balance changed — invalidate wallet list cache so processor picks up fresh balance
+    await cache.invalidateWallets(this.redis);
+
     return { walletId, address: wallet.address, usdt: balance, updatedAt: new Date() };
   }
 
+
   /**
    * Assign best available wallet for a new invoice.
-   * Selects from active receiving/hot wallets with lowest load.
+   * Uses Redis cache (Gap 1 fix) with stampede protection.
    */
   async assignReceivingWallet() {
-    const wallet = await Wallet.findOne({
-      isActive: true,
-      type: { $in: ['hot', 'receiving'] },
-    })
-      .sort({ 'balance.usdt': 1, transactionCount: 1 }) // Least loaded first
-      .select('_id address')
-      .lean();
+    const wallets = await cache.getActiveWallets(
+      this.redis,
+      async () => Wallet.find({
+        isActive: true,
+        type: { $in: ['hot', 'receiving'] },
+      })
+        .select('_id address balance transactionCount')
+        .lean(),
+    );
+
+    if (!wallets || wallets.length === 0) {
+      throw AppError.serviceUnavailable('No receiving wallets available — please add hot wallets');
+    }
+
+    // Select least-loaded wallet in-process (lowest balance + lowest txCount)
+    const wallet = wallets
+      .filter((w) => w._id && w.address)
+      .sort((a, b) => {
+        const balDiff = parseFloat(a.balance?.usdt || 0) - parseFloat(b.balance?.usdt || 0);
+        if (balDiff !== 0) return balDiff;
+        return (a.transactionCount || 0) - (b.transactionCount || 0);
+      })[0];
 
     if (!wallet) {
-      throw AppError.serviceUnavailable('No receiving wallets available — please add hot wallets');
+      throw AppError.serviceUnavailable('No valid receiving wallets available');
     }
     return wallet;
   }

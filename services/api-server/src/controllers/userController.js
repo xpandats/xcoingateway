@@ -29,6 +29,7 @@ const asyncHandler = require('../utils/asyncHandler');
 const { config }   = require('../config');
 const logger = require('@xcg/logger').createLogger('user-ctrl');
 const crypto = require('crypto');
+const { revokeJti } = require('../middleware/authenticate');
 
 // Helper: safe regex escape to prevent ReDoS via search param
 function escapeRegex(str) {
@@ -371,6 +372,85 @@ async function forceLogout(req, res) {
   });
 }
 
+/**
+ * POST /admin/users/:id/revoke-token
+ *
+ * Emergency revoke a SPECIFIC active JWT access token by its jti.
+ *
+ * WHY THIS EXISTS:
+ *   A user's access token is valid for 15 minutes even after forceLogout() revokes
+ *   their refresh tokens — because the access token is stateless (JWT). In a breach
+ *   scenario where a specific token is stolen (e.g., from a log, traffic capture, or
+ *   endpoint compromise), those 15 minutes represent a real attack window.
+ *
+ *   This endpoint adds the jti to the Redis blocklist with TTL = access token lifetime,
+ *   making that specific token immediately rejected by authenticate middleware.
+ *
+ * REQUEST BODY: { jti: "<hex>", reason: "<admin note>" }
+ * Requires: superAdminAuth + confirmCriticalAction (defined in route)
+ *
+ * NOTE: The jti is obtained from:
+ *   - The user's active session list (if exposed)
+ *   - Audit log entries (if jti is logged on use)
+ *   - The affected user's report of their last token
+ *   - Traffic analysis during an incident investigation
+ */
+async function revokeToken(req, res) {
+  const { jti, reason } = req.body;
+
+  if (!jti || typeof jti !== 'string' || !/^[0-9a-f]{32}$/.test(jti)) {
+    throw AppError.badRequest('Invalid jti format — must be 32-character hex string');
+  }
+  if (!reason || !String(reason).trim()) {
+    throw AppError.badRequest('Reason is required for token revocation audit trail');
+  }
+
+  assertValidObjectId(req.params.id, 'userId');
+  const user = await User.findById(req.params.id).lean();
+  if (!user) throw AppError.notFound('User not found', ErrorCodes.USER_NOT_FOUND);
+
+  const redis = req.app.locals.redis;
+  if (!redis) {
+    throw AppError.internalError('Redis unavailable — cannot write JTI blocklist. Token revocation requires Redis.');
+  }
+
+  // Blocklist this specific jti for the access token lifetime
+  const accessTokenTtl = parseInt(config.jwt.accessExpiry, 10) || 900; // 15 min default
+  await revokeJti(redis, jti, Math.floor(Date.now() / 1000) + accessTokenTtl);
+
+  // Also revoke all refresh tokens (belt-and-suspenders)
+  const result = await RefreshToken.deleteMany({ userId: new mongoose.Types.ObjectId(req.params.id) });
+
+  await AuditLog.create({
+    actor:      actorId(req),
+    action:     'user.token_revoked',
+    resource:   'user',
+    resourceId: String(user._id),
+    ipAddress:  req.ip,
+    outcome:    'success',
+    timestamp:  new Date(),
+    metadata:   { jti, reason: String(reason).trim(), refreshTokensRevoked: result.deletedCount },
+  });
+
+  logger.warn('UserCtrl: specific JWT revoked by admin', {
+    adminId: actorId(req),
+    userId:  String(user._id),
+    jti,
+    reason:  String(reason).trim(),
+  });
+
+  res.json({
+    success: true,
+    data: {
+      message:              'Token blocklisted. The specific JWT is immediately invalid.',
+      jti,
+      refreshTokensRevoked: result.deletedCount,
+      blockedForSeconds:    accessTokenTtl,
+    },
+  });
+}
+
+
 // C1 FIX: mongoose is now required at TOP of file (line 25)
 
 module.exports = {
@@ -383,4 +463,6 @@ module.exports = {
   unlockUser:     asyncHandler(unlockUser),
   deactivateUser: asyncHandler(deactivateUser),
   forceLogout:    asyncHandler(forceLogout),
+  revokeToken:    asyncHandler(revokeToken),
 };
+

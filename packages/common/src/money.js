@@ -116,4 +116,21 @@ function format(amount) {
   return fromUnits(toUnits(amount)).replace(/\.?0+$/, '');
 }
 
-module.exports = { toUnits, fromUnits, add, subtract, multiply, compare, isValidAmount, format };
+/**
+ * Round amount to N decimal places using integer arithmetic (no float drift).
+ * Used by the Matching Engine for fee calculations.
+ * @param {string|number} amount
+ * @param {number} decimalPlaces - number of significant decimal places to keep (max 8)
+ * @returns {number} Rounded float (safe for numbers within our 90M USDT limit)
+ */
+function round(amount, decimalPlaces) {
+  const dp     = Math.max(0, Math.min(8, Math.floor(decimalPlaces)));
+  const factor = 10 ** dp;
+  // Use integer math: toUnits gives 8dp precision, divide by (10^(8-dp)) to get dp precision
+  const units  = toUnits(amount);
+  const divBy  = BigInt(10 ** (8 - dp));
+  const rounded = (units + divBy / 2n) / divBy;
+  return Number(rounded) / factor;
+}
+
+module.exports = { toUnits, fromUnits, add, subtract, multiply, compare, isValidAmount, format, round };

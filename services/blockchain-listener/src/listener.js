@@ -26,7 +26,9 @@
  *   - Circuit breaker: if 5 consecutive blocks fail → alert + pause
  */
 
-const { SystemConfig, Wallet } = require('@xcg/database');
+const { BlockScanCursor, Wallet } = require('@xcg/database');
+const cache = require('@xcg/cache');
+
 
 const DEDUP_KEY_PREFIX  = 'xcg:txseen:';
 const DEDUP_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
@@ -218,36 +220,74 @@ class BlockchainListener {
 
   // ─── Wallet Address Cache ────────────────────────────────────────────────────
 
+  /**
+   * Refresh in-memory wallet address set.
+   *
+   * Two-layer cache strategy:
+   *   Layer 1 (in-memory): _walletAddresses Set — checked every block, zero latency
+   *     Refreshed every 60s from Layer 2.
+   *   Layer 2 (Redis):     xcg:cache:wallets:active, 2-min TTL, stampede-protected
+   *     Populated from DB on miss. Multiple listener instances share this cache.
+   *   Layer 3 (DB):        MongoDB Wallet.find() — only hit on Redis miss/cold start
+   *
+   * On Redis failure: falls through to MongoDB directly (fail-open).
+   * On DB failure:    keeps stale in-memory set (better than crashing the listener).
+   */
   async _refreshWalletAddresses() {
     try {
-      const wallets = await Wallet.find(
-        { isActive: true },
-        { address: 1 },
-      ).lean();
-      this._walletAddresses = new Set(wallets.map((w) => w.address.toLowerCase()));
+      // Gap 1 fix: use Redis-backed wallet cache with stampede protection
+      const wallets = await cache.getActiveWallets(
+        this.redis,
+        async () => {
+          // DB loader — only called on Redis cache miss
+          const rows = await Wallet.find(
+            { isActive: true },
+            { address: 1, _id: 0 },  // Only fetch address — minimize data transfer
+          ).lean();
+          this.logger.debug('BlockchainListener: wallet list loaded from DB', { count: rows.length });
+          return rows;
+        },
+      );
+
+      this._walletAddresses = new Set(
+        (wallets || []).map((w) => w.address.toLowerCase()),
+      );
       this._walletRefreshAt = Date.now();
       this.logger.debug('BlockchainListener: wallet cache refreshed', {
         count: this._walletAddresses.size,
+        source: 'redis-or-db',
       });
     } catch (err) {
       this.logger.error('BlockchainListener: failed to refresh wallet addresses', {
         error: err.message,
       });
-      // Don't throw — keep using stale cache rather than crash
+      // Don't throw — keep using stale in-memory cache rather than crash
     }
   }
 
   // ─── State Persistence ───────────────────────────────────────────────────────
 
   async _getLastScannedBlock() {
-    const config = await SystemConfig.findOne({ key: 'lastScannedBlock' }).lean();
-    return config ? Number(config.value) : 0;
+    const cursor = await BlockScanCursor.findOne({ network: 'tron', token: 'USDT' }).lean();
+    return cursor ? Number(cursor.lastScannedBlock) : 0;
   }
 
   async _setLastScannedBlock(blockNum) {
-    await SystemConfig.findOneAndUpdate(
-      { key: 'lastScannedBlock' },
-      { key: 'lastScannedBlock', value: String(blockNum), updatedAt: new Date() },
+    await BlockScanCursor.findOneAndUpdate(
+      { network: 'tron', token: 'USDT' },
+      {
+        $set: {
+          lastScannedBlock:     blockNum,
+          lastScannedTimestamp: new Date(),
+          lastPollAt:           new Date(),
+          lastError:            null,
+          activeProvider:       this.adapter?.activeProvider || 'trongrid',
+        },
+        $inc: {
+          pollCount:          1,
+          totalBlocksScanned: 1,
+        },
+      },
       { upsert: true, new: true },
     );
   }

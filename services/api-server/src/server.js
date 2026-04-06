@@ -23,7 +23,9 @@ const { validateMasterKey }        = require('@xcg/crypto');
 const { connectDB, disconnectDB }  = require('@xcg/database');
 const { createApp }                = require('./app');
 const { createPublisher, QUEUES }  = require('@xcg/queue');
-const IORedis                      = require('ioredis');
+const { createRedisClient }        = require('@xcg/common/src/redisFactory');
+const { mongoBreaker, tronBreaker } = require('@xcg/common/src/circuitBreaker');
+
 
 const logger = createLogger('api-server');
 
@@ -57,16 +59,19 @@ async function startServer() {
     logger.info('MongoDB connected');
 
     // 4. Connect to Redis
-    logger.info('Connecting to Redis...');
-    const redis = new IORedis(config.redis.url, {
-      maxRetriesPerRequest: null,
-      lazyConnect:          false,
-    });
+    // Gap 5: Use createRedisClient() which supports REDIS_MODE=standalone|sentinel|cluster.
+    // Switch to sentinel in production by setting:
+    //   REDIS_MODE=sentinel
+    //   REDIS_SENTINEL_HOSTS=sentinel1:26379,sentinel2:26379,sentinel3:26379
+    //   REDIS_SENTINEL_NAME=mymaster
+    logger.info(`Connecting to Redis (mode: ${process.env.REDIS_MODE || 'standalone'})...`);
+    const redis = createRedisClient({ logger });
     await new Promise((resolve, reject) => {
       redis.once('ready', resolve);
       redis.once('error', reject);
     });
     logger.info('Redis connected');
+
 
     // 4b. Set up queue publishers (for inter-service event publishing)
     const redisOpts = {
@@ -76,8 +81,15 @@ async function startServer() {
     const paymentCreatedPublisher = createPublisher(
       QUEUES.PAYMENT_CREATED, redisOpts, config.queue.signingSecret, logger,
     );
+    // Publisher for withdrawal.eligible — triggers withdrawal engine for manual withdrawal requests
+    const withdrawalEligiblePublisher = createPublisher(
+      QUEUES.WITHDRAWAL_ELIGIBLE, redisOpts, config.queue.signingSecret, logger,
+    );
 
-    // 4c. Alert publisher — wired into authService for brute-force lockout notifications
+    // 4d. Circuit breaker monitoring (Gap 6)
+    // mongoBreaker and tronBreaker are singleton instances defined in @xcg/common.
+    // Any service wrapping DB or TronGrid calls via these breakers will emit events here.
+    // We hook the events to fire SYSTEM_ALERT so ops is notified within seconds.
     const alertPublisher = createPublisher(
       QUEUES.SYSTEM_ALERT, redisOpts, config.queue.signingSecret, logger,
     );
@@ -85,8 +97,38 @@ async function startServer() {
     authService.setAlertPublisher(alertPublisher);
     logger.info('Alert publisher wired into authService');
 
-    // 5. Create Express app with Redis + publisher injected
-    const app = createApp(redis, paymentCreatedPublisher);
+    mongoBreaker.on('open', ({ name }) => {
+      logger.error('CircuitBreaker: MongoDB OPEN — all DB calls will fast-fail', { name });
+      alertPublisher.publish(
+        { type: 'circuit_open', dependency: name, message: 'MongoDB circuit breaker OPENED. DB is unhealthy. API returning 503.' },
+        `alert:circuit:${name}:open`,
+      ).catch(() => {});
+    });
+    mongoBreaker.on('close', ({ name }) => {
+      logger.info('CircuitBreaker: MongoDB CLOSED — database recovered', { name });
+      alertPublisher.publish(
+        { type: 'circuit_close', dependency: name, message: 'MongoDB circuit breaker CLOSED. Database has recovered.' },
+        `alert:circuit:${name}:close`,
+      ).catch(() => {});
+    });
+
+    tronBreaker.on('open', ({ name }) => {
+      logger.error('CircuitBreaker: TronGrid OPEN — blockchain calls will fast-fail', { name });
+      alertPublisher.publish(
+        { type: 'circuit_open', dependency: name, message: 'TronGrid circuit breaker OPENED. Blockchain reads are failing.' },
+        `alert:circuit:${name}:open`,
+      ).catch(() => {});
+    });
+    tronBreaker.on('close', ({ name }) => {
+      logger.info('CircuitBreaker: TronGrid CLOSED — blockchain API recovered', { name });
+      alertPublisher.publish(
+        { type: 'circuit_close', dependency: name, message: 'TronGrid circuit breaker CLOSED. Blockchain API has recovered.' },
+        `alert:circuit:${name}:close`,
+      ).catch(() => {});
+    });
+
+    // 5. Create Express app with Redis + publishers injected
+    const app = createApp(redis, paymentCreatedPublisher, withdrawalEligiblePublisher);
 
     // 6. Start HTTP server
     const server = app.listen(config.port, () => {
@@ -114,9 +156,39 @@ async function startServer() {
     SECRET_KEYS.forEach((k) => { delete process.env[k]; });
     logger.info('SC-3: Secrets removed from process.env');
 
+    // 8b. ServiceHealthSnapshot — persist health state every 60s for dashboard time-series
+    const { ServiceHealthSnapshot } = require('@xcg/database');
+    const { isDBConnected } = require('@xcg/database');
+    const mongoose = require('mongoose');
+    const healthInterval = setInterval(async () => {
+      try {
+        const memory = process.memoryUsage();
+        const dbHealthy = isDBConnected() && mongoose.connection.readyState === 1;
+        let redisHealthy = false;
+        try { redisHealthy = (await redis.ping()) === 'PONG'; } catch { /* noop */ }
+
+        await ServiceHealthSnapshot.create({
+          serviceName:  'api-server',
+          status:       (dbHealthy && redisHealthy) ? 'healthy' : 'degraded',
+          checkedAt:    new Date(),
+          dependencies: {
+            mongodb: { status: dbHealthy ? 'healthy' : 'down' },
+            redis:   { status: redisHealthy ? 'healthy' : 'down' },
+          },
+          metrics: {
+            uptime:     Math.floor(process.uptime()),
+            heapUsedMb: Math.round(memory.heapUsed / 1048576),
+            heapTotalMb:Math.round(memory.heapTotal / 1048576),
+            rssMb:      Math.round(memory.rss / 1048576),
+          },
+        });
+      } catch { /* Never let health persistence crash the server */ }
+    }, 60_000); // Every 60 seconds
+
     // 8. Graceful shutdown
     const shutdown = async (signal) => {
       logger.info(`${signal} received — starting graceful shutdown`);
+      clearInterval(healthInterval); // Stop health snapshot persistence
 
       server.close(async () => {
         logger.info('HTTP server closed');

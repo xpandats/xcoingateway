@@ -35,6 +35,8 @@ const {
 const asyncHandler = require('../utils/asyncHandler');
 const { config }   = require('../config');
 const logger = require('@xcg/logger').createLogger('system-ctrl');
+const cache  = require('../utils/cache');
+
 
 const PAUSE_INVOICES_KEY     = 'xcg:system:invoices_paused';
 const PAUSE_WITHDRAWALS_KEY  = 'xcg:system:withdrawals_paused';
@@ -53,10 +55,15 @@ const READONLY_KEYS = new Set([
 // ─── GET /admin/system/config ─────────────────────────────────────────────────
 
 async function getSystemConfig(req, res) {
-  const configs = await SystemConfig.find({})
-    .select('-__v')
-    .sort({ key: 1 })
-    .lean();
+  const redis = req.app.locals.redis;
+
+  // Gap 3 fix: cache the full config list with stampede protection (10-min TTL)
+  const dbConfigs = await cache.getOrSet(
+    redis,
+    cache.KEY.systemConfigAll(),
+    cache.TTL.SYSTEM_CONFIG,
+    async () => SystemConfig.find({}).select('-__v').sort({ key: 1 }).lean(),
+  );
 
   // Merge with read-only env-sourced values (sanitized)
   const readonlyConfigs = [
@@ -67,7 +74,7 @@ async function getSystemConfig(req, res) {
 
   const allConfigs = [
     ...readonlyConfigs,
-    ...configs.map((c) => ({ ...c, readonly: READONLY_KEYS.has(c.key) })),
+    ...(dbConfigs || []).map((c) => ({ ...c, readonly: READONLY_KEYS.has(c.key) })),
   ];
 
   res.json({
@@ -75,6 +82,7 @@ async function getSystemConfig(req, res) {
     data: { config: allConfigs, total: allConfigs.length },
   });
 }
+
 
 // G1 FIX: Import allowed key whitelist from SystemConfig model
 const { ALLOWED_CONFIG_KEYS } = require('@xcg/database').SystemConfig;
@@ -125,6 +133,9 @@ async function updateSystemConfig(req, res) {
     metadata:   { key, newValue: data.value },
   });
 
+  // Gap 3 fix: bust the config cache so next read is fresh
+  await cache.invalidateSystemConfig(req.app.locals.redis, key);
+
   logger.warn('SystemCtrl: config key updated', {
     key,
     newValue: data.value,
@@ -133,6 +144,7 @@ async function updateSystemConfig(req, res) {
 
   res.json({ success: true, data: { config: updated } });
 }
+
 
 // ─── GET /admin/system/health ──────────────────────────────────────────────────
 
@@ -171,21 +183,29 @@ async function getSystemHealth(req, res) {
     } catch { /* noop */ }
   }
 
-  // Queue depths (approximate via Redis list lengths if using BullMQ/Redis)
+  // Queue depths via BullMQ internal Redis key patterns.
+  // BullMQ uses sorted sets (ZSET) not lists (LIST), so we use ZCARD not LLEN.
+  // Key format: {queueName}:wait  — jobs waiting to be processed
+  //             {queueName}:delayed — jobs scheduled for future processing
+  // Queue names from QUEUES constants (xcg:payment:created, etc.)
   const queueDepths = {};
   if (redis) {
-    const queueKeys = [
-      'xcg:queue:payment:created',
-      'xcg:queue:transaction:detected',
-      'xcg:queue:payment:confirmed',
-      'xcg:queue:signing:request',
-      'xcg:queue:notification:webhook',
+    const bullQueues = [
+      { name: 'payment:created',      key: 'xcg:payment:created' },
+      { name: 'transaction:detected', key: 'xcg:transaction:detected' },
+      { name: 'payment:confirmed',    key: 'xcg:payment:confirmed' },
+      { name: 'signing:request',      key: 'xcg:signing:request' },
+      { name: 'withdrawal:eligible',  key: 'xcg:withdrawal:eligible' },
+      { name: 'dead:letter',          key: 'xcg:dead:letter' },
     ];
-    for (const qKey of queueKeys) {
+    for (const q of bullQueues) {
       try {
-        const len = await redis.llen(qKey);
-        queueDepths[qKey.split(':').slice(-2).join(':')] = len;
-      } catch { /* skip */ }
+        // BullMQ wait queue = sorted set with key {queueName}:wait
+        const waiting = await redis.zcard(`${q.key}:wait`);
+        const delayed = await redis.zcard(`${q.key}:delayed`);
+        const failed  = await redis.zcard(`${q.key}:failed`);
+        queueDepths[q.name] = { waiting, delayed, failed };
+      } catch { /* skip — queue may not exist yet */ }
     }
   }
 

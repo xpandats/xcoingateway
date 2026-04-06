@@ -18,7 +18,7 @@
  */
 
 const Joi                = require('joi');
-const { Wallet, AuditLog } = require('@xcg/database');
+const { Wallet, AuditLog, GasFeeRecord } = require('@xcg/database');
 const { decrypt }        = require('@xcg/crypto');
 const { getTronWeb }     = require('@xcg/tron');
 
@@ -146,8 +146,10 @@ class Signer {
       }
 
     } catch (err) {
-      // SECURITY: Always zero key on error too
-      if (privateKeyBuffer) {
+      // SECURITY: Always zero key on error too.
+      // Guard with Buffer.isBuffer: if decrypt() returned a non-Buffer (bug!),
+      // fill() would throw again and mask the real error.
+      if (privateKeyBuffer && Buffer.isBuffer(privateKeyBuffer)) {
         privateKeyBuffer.fill(0);
         privateKeyBuffer = null;
       }
@@ -174,6 +176,16 @@ class Signer {
       txHash,
       // NOTE: amount and toAddress intentionally NOT logged here (audit log has it)
     });
+
+    // 9. Record gas fee for operational tracking (non-blocking)
+    GasFeeRecord.create({
+      txHash,
+      network:      req.network,
+      walletAddress:wallet.address,
+      operation:    'trc20_transfer',
+      feeLimit:     100_000_000,   // Fee limit set in triggerSmartContract
+      withdrawalId: req.withdrawalId,
+    }).catch((e) => this.logger.debug('Signer: GasFeeRecord write failed', { error: e.message }));
 
     return { txHash };
   }

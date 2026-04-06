@@ -64,15 +64,35 @@ const reconciliationReportSchema = new mongoose.Schema({
 }, {
   timestamps: true,
   collection: 'reconciliation_reports',
+  strict: true, // Reject unknown fields — financial report integrity
 });
+
 
 reconciliationReportSchema.index({ startedAt: -1 });
 reconciliationReportSchema.index({ status: 1, startedAt: -1 });
 reconciliationReportSchema.index({ passed: 1, startedAt: -1 });
 
-// Immutability: completed reports cannot be modified (only resolvedAt/resolvedBy/resolutionNotes allowed via findOneAndUpdate)
+// Immutability: once a report is completed it must not be silently modified.
+// Only resolution fields (resolvedAt/resolvedBy/resolutionNotes) are ever updated
+// — handled deliberately in the reconciler via findOneAndUpdate with explicit $set.
+// These hooks block ALL update/delete paths to prevent silent tampering.
+reconciliationReportSchema.pre('updateOne',         (_, next) => next(new Error('ReconciliationReport: use findOneAndUpdate for resolution only')));
+reconciliationReportSchema.pre('updateMany',        (_, next) => next(new Error('ReconciliationReport is immutable')));
+reconciliationReportSchema.pre('findOneAndUpdate',  function (next) {
+  // Allow ONLY the resolution fields — reject anything else
+  const update  = this.getUpdate() || {};
+  const allowed = new Set(['resolvedAt', 'resolvedBy', 'resolutionNotes', 'withdrawalsPaused', 'alertSent', 'status', 'completedAt', 'durationMs', 'error', 'passed', 'walletsChecked', 'mismatchCount', 'onChainTotalUsdt', 'ledgerTotalUsdt', 'totalDifference', 'totalConfirmedInvoices', 'totalMatchedTxns', 'unmatchedTxnCount', 'mismatches']);
+  const setKeys = Object.keys(update.$set || {});
+  const forbidden = setKeys.filter((k) => !allowed.has(k));
+  if (forbidden.length > 0) {
+    return next(new Error(`ReconciliationReport: cannot update fields: ${forbidden.join(', ')}`));
+  }
+  next();
+});
+reconciliationReportSchema.pre('findOneAndReplace', (_, next) => next(new Error('ReconciliationReport is immutable — no replace')));
 reconciliationReportSchema.pre('deleteOne',         (_, next) => next(new Error('ReconciliationReport is immutable')));
 reconciliationReportSchema.pre('findOneAndDelete',  (_, next) => next(new Error('ReconciliationReport is immutable')));
 reconciliationReportSchema.pre('deleteMany',        (_, next) => next(new Error('ReconciliationReport is immutable')));
+
 
 module.exports = mongoose.model('ReconciliationReport', reconciliationReportSchema);

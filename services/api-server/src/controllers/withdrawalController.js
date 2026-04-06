@@ -21,6 +21,13 @@ const { config }   = require('../config');
 
 const logger = require('@xcg/logger').createLogger('withdrawal-ctrl');
 
+// Withdrawal eligible publisher — injected at startup by server.js (same pattern as paymentCreatedPublisher)
+// Publishing to WITHDRAWAL_ELIGIBLE triggers the withdrawal engine to pick up and sign the request.
+let withdrawalEligiblePublisher = null;
+function setWithdrawalEligiblePublisher(publisher) {
+  withdrawalEligiblePublisher = publisher;
+}
+
 const PAUSE_WITHDRAWALS_KEY = 'xcg:system:withdrawals_paused';
 
 const createSchema = Joi.object({
@@ -206,6 +213,21 @@ async function createWithdrawal(req, res) {
     requiresApproval,
   });
 
+  // Publish to withdrawal engine queue (non-blocking — failure logged, not thrown)
+  // Skip if pending admin approval — engine should not process until approved
+  if (!requiresApproval && withdrawalEligiblePublisher) {
+    withdrawalEligiblePublisher.publish(
+      {
+        merchantId:      String(merchant._id),
+        amount:          String(withdrawal.amount),
+        idempotencyKey,  // Engine uses this to find the existing withdrawal record
+      },
+      idempotencyKey,  // BullMQ job ID — deduplication
+    ).catch((err) => logger.error('WithdrawalController: failed to publish to WITHDRAWAL_ELIGIBLE', {
+      withdrawalId: withdrawal.withdrawalId, error: err.message,
+    }));
+  }
+
   res.status(201).json({
     success: true,
     data: {
@@ -304,4 +326,5 @@ module.exports = {
   listWithdrawals:  asyncHandler(listWithdrawals),
   getWithdrawal:    asyncHandler(getWithdrawal),
   getBalance:       asyncHandler(getBalance),
+  setWithdrawalEligiblePublisher,
 };

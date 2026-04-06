@@ -21,7 +21,19 @@ const { Queue, Worker, QueueEvents } = require('bullmq');
 const crypto = require('crypto');
 const { QUEUES } = require('./queues');
 
-const MESSAGE_TTL_MS    = 5 * 60 * 1000;  // 5 minutes — messages older than this are rejected
+// Lazy-loaded to avoid circular deps in packages that don't have @xcg/database
+let _DeadLetterEntry = null;
+function _getDLEModel() {
+  if (_DeadLetterEntry) return _DeadLetterEntry;
+  try {
+    _DeadLetterEntry = require('@xcg/database').DeadLetterEntry;
+  } catch { /* not available in this context — skip DB persistence */ }
+  return _DeadLetterEntry;
+}
+
+const MESSAGE_TTL_MS    = 30 * 60 * 1000; // 30 minutes — allows for realistic service restart windows
+// NOTE: 5 minutes was too short — if any consumer is down during maintenance, payment
+// events expire permanently (blockchain listener won't re-publish due to Redis dedup).
 const DEAD_LETTER_QUEUE = QUEUES.DEAD_LETTER;
 
 /**
@@ -184,6 +196,22 @@ function createConsumer(queueName, redisOpts, secret, logger, handler, workerOpt
           { original: envelope, reason: sigErr.message, queue: queueName },
           `dlq:${job.id}:${Date.now()}`,
         );
+
+        // Persist to MongoDB for compliance (non-blocking)
+        const DLE = _getDLEModel();
+        if (DLE) {
+          DLE.create({
+            dlqId:          `dlq_${crypto.randomBytes(12).toString('hex')}`,
+            sourceQueue:    queueName,
+            jobId:          job.id,
+            payload:        envelope,
+            source:         'hmac_invalid',
+            error:          sigErr.message,
+            serviceName:    queueName.split(':').pop() || 'unknown',
+            status:         'pending',
+          }).catch((e) => logger.error('QueueClient: failed to persist DLQ entry to DB', { error: e.message }));
+        }
+
         return; // Don't re-throw — mark as complete (we handled it)
       }
 
@@ -227,6 +255,23 @@ function createConsumer(queueName, redisOpts, secret, logger, handler, workerOpt
         { original: job?.data, reason: err?.message, queue: queueName },
         `dlq:${job?.id}:${Date.now()}`,
       );
+
+      // Persist to MongoDB for compliance (non-blocking)
+      const DLE = _getDLEModel();
+      if (DLE) {
+        DLE.create({
+          dlqId:          `dlq_${crypto.randomBytes(12).toString('hex')}`,
+          sourceQueue:    queueName,
+          jobId:          job?.id || 'unknown',
+          payload:        job?.data || {},
+          source:         'max_retries',
+          error:          err?.message || 'unknown',
+          errorStack:     err?.stack || null,
+          attempts:       job?.attemptsMade || 0,
+          serviceName:    queueName.split(':').pop() || 'unknown',
+          status:         'pending',
+        }).catch((e) => logger.error('QueueClient: failed to persist DLQ entry to DB', { error: e.message }));
+      }
     } catch {
       // Don't crash on dead letter failure
     }
@@ -235,8 +280,69 @@ function createConsumer(queueName, redisOpts, secret, logger, handler, workerOpt
   return { worker };
 }
 
+/**
+ * Create a Dead Letter Queue monitor.
+ *
+ * M3 FIX: Without this, messages that exhaust all 5 BullMQ retries pile up
+ * in the DLQ silently — only a log line is emitted. With this monitor,
+ * operators receive a SYSTEM_ALERT the moment any message lands in the DLQ,
+ * and on every hourly check while DLQ still has pending messages.
+ *
+ * @param {object} opts
+ * @param {object} opts.redisOpts       - IORedis connection options
+ * @param {string} opts.secret          - QUEUE_SIGNING_SECRET
+ * @param {object} opts.alertPublisher  - Pre-created alert publisher
+ * @param {string} opts.serviceName     - Name of the calling service (for alert context)
+ * @param {object} opts.logger          - @xcg/logger instance
+ * @param {number} [opts.intervalMs]    - Poll interval (default: 30 minutes)
+ * @returns {{ stop: Function }}
+ */
+function createDLQMonitor({ redisOpts, secret, alertPublisher, serviceName, logger, intervalMs = 30 * 60 * 1000 }) {
+  const dlqQueue = new Queue(QUEUES.DEAD_LETTER, { connection: redisOpts });
+
+  async function checkDLQ() {
+    try {
+      const counts = await dlqQueue.getJobCounts('waiting', 'failed', 'delayed');
+      const total = (counts.waiting || 0) + (counts.failed || 0) + (counts.delayed || 0);
+
+      if (total > 0) {
+        logger.error('DLQMonitor: dead letter queue has pending messages — operator action required', {
+          service: serviceName, waiting: counts.waiting, failed: counts.failed, total,
+        });
+        await alertPublisher.publish(
+          {
+            type: 'dead_letter_queue_has_messages',
+            service: serviceName,
+            total,
+            waiting: counts.waiting,
+            failed: counts.failed,
+            message: `[${serviceName}] Dead letter queue has ${total} unprocessed message(s). Immediate operator review required.`,
+          },
+          `alert:dlq:${serviceName}:${Date.now()}`,
+        );
+      } else {
+        logger.debug('DLQMonitor: dead letter queue is clear', { service: serviceName });
+      }
+    } catch (err) {
+      logger.error('DLQMonitor: failed to check dead letter queue', { service: serviceName, error: err.message });
+    }
+  }
+
+  // Run immediately on startup, then on interval
+  checkDLQ();
+  const timer = setInterval(checkDLQ, intervalMs);
+
+  return {
+    stop: () => {
+      clearInterval(timer);
+      dlqQueue.close().catch(() => {});
+    },
+  };
+}
+
 module.exports = {
   createPublisher,
   createConsumer,
+  createDLQMonitor,
   QUEUES,
 };

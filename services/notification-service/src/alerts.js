@@ -26,24 +26,46 @@ const TELEGRAM_TIMEOUT_MS = 8_000;
 
 // Alert type → emoji mapping for quick visual scanning
 const ALERT_EMOJI = {
-  stale_block:                  '🔴',
-  blockchain_circuit_open:      '🚨',
-  late_payment:                 '🟡',
-  reconciliation_mismatch:      '🚨',
-  no_hot_wallet:                '🔴',
-  withdrawal_requires_approval: '🟠',
-  daily_cap_reached:            '🟠',
-  withdrawal_to_own_wallet:     '🚨',
-  withdrawal_over_per_tx_limit: '🟠',
-  insufficient_energy:          '⚡',
-  underpayment:                 '🟡',
-  overpayment:                  '🟡',
-  duplicate_payment:            '🚨',
-  account_locked_brute_force:   '🔐',
-  totp_brute_force:             '🔐',
-  system_error:                 '❌',
-  default:                      'ℹ️',
+  // Blockchain listener
+  stale_block:                        '🔴',
+  blockchain_circuit_open:            '🚨',
+  stuck_transactions_recovery:        '🟡',
+
+  // Matching engine
+  late_payment:                       '🟡',
+  underpayment:                       '🟡',
+  overpayment:                        '🟡',
+  duplicate_payment:                  '🚨',
+
+  // Withdrawal engine
+  no_hot_wallet:                      '🔴',
+  withdrawal_requires_approval:       '🟠',
+  daily_cap_reached:                  '🟠',
+  withdrawal_to_own_wallet:           '🚨',
+  withdrawal_over_per_tx_limit:       '🟠',
+  withdrawal_blocked_active_dispute:  '🟡',
+  withdrawal_confirmation_timeout:    '🔴',
+  signing_complete_update_failed:     '🚨',
+  stuck_signing_recovery_broadcast:   '🟠',
+  stuck_signing_recovery_reset:       '🚨',
+  insufficient_energy:                '⚡',
+  low_tron_energy:                    '⚡',
+
+  // Reconciliation service
+  reconciliation_mismatch:            '🚨',
+
+  // Auth / security
+  account_locked_brute_force:         '🔐',
+  totp_brute_force:                   '🔐',
+
+  // DLQ monitor (all services)
+  dead_letter_queue_has_messages:     '🔴',
+
+  // System
+  system_error:                       '❌',
+  default:                            'ℹ️',
 };
+
 
 
 class AlertService {

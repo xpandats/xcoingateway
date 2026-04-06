@@ -17,11 +17,14 @@ require('dotenv').config({ path: path.resolve(__dirname, '../../../.env.local') 
 const { config, validateConfig }             = require('../../api-server/src/config');
 const { connectDB }                           = require('@xcg/database');
 const { createLogger }                        = require('@xcg/logger');
-const { createConsumer, createPublisher, QUEUES } = require('@xcg/queue');
+const { createConsumer, createPublisher, createDLQMonitor, QUEUES } = require('@xcg/queue');
 const { startHealthServer }                   = require('@xcg/common/src/healthServer');
 const { TronAdapter }                         = require('@xcg/tron');
-const IORedis                                 = require('ioredis');
+const { createRedisClient }                   = require('@xcg/common/src/redisFactory');
+const { registerShutdown, runMain }           = require('@xcg/common/src/shutdown');
 const mongoose                                = require('mongoose');
+
+
 const MatchingEngine                          = require('./engine');
 const ConfirmationTracker                     = require('./confirmationTracker');
 const InvoiceExpiryScanner                    = require('./invoiceExpiry');
@@ -38,8 +41,9 @@ async function main() {
 
   await connectDB(config.db.uri, logger);
 
-  const redis = new IORedis(config.redis.url, { maxRetriesPerRequest: null });
+  const redis = createRedisClient({ logger }); // Gap 5: Sentinel/Cluster-aware
   redis.on('error', (err) => logger.error('MatchingEngine: Redis error', { error: err.message }));
+
 
   // Health check server (internal only — port 3093)
   startHealthServer({ port: 3093, service: 'matching-engine', mongoose, redis, logger });
@@ -101,20 +105,29 @@ async function main() {
   await tracker.start();   // Runs stuck-tx recovery immediately + starts 10s poll loop
   expiryScanner.start();   // Runs expired invoice sweep every 60s
 
-  async function shutdown(signal) {
-    logger.info(`MatchingEngine: ${signal} — shutting down`);
-    tracker.stop();
-    expiryScanner.stop();
-    await worker.close();
-    await redis.quit();
-    process.exit(0);
-  }
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('SIGINT',  () => shutdown('SIGINT'));
-  process.on('uncaughtException',  (err) => { logger.error('MatchingEngine: uncaught', { error: err.message }); process.exit(1); });
-  process.on('unhandledRejection', (r)   => { logger.error('MatchingEngine: unhandled rejection', { reason: String(r) }); process.exit(1); });
+  // M3 FIX: DLQ monitor — alerts on any messages in dead letter queue
+  const dlqMonitor = createDLQMonitor({
+    redisOpts,
+    secret:         config.queue.signingSecret,
+    alertPublisher,
+    serviceName:    'matching-engine',
+    logger,
+  });
+
+  registerShutdown({
+    logger,
+    service: 'matching-engine',
+    cleanup: async () => {
+      tracker.stop();
+      expiryScanner.stop();
+      dlqMonitor.stop();
+      await worker.close();
+      await redis.quit();
+    },
+  });
 
   logger.info('MatchingEngine: fully running — Phase 1 (detection) + Phase 2 (confirmation) + Expiry Scanner');
 }
 
-main().catch((err) => { console.error('MatchingEngine: fatal startup error', err.message); process.exit(1); });
+runMain(main, { logger, service: 'matching-engine' });
+

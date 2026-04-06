@@ -37,3 +37,13 @@ coverage/
 # Temp
 tmp/
 temp/
+
+# SSL certificates (NEVER commit private keys)
+config/ssl/
+*.pem
+*.key
+*.crt
+
+# Backups (encrypted, but still don't commit)
+backups/
+*.enc

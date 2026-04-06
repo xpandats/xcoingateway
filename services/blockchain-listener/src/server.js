@@ -24,9 +24,14 @@ const { createLogger }              = require('@xcg/logger');
 const { TronAdapter }               = require('@xcg/tron');
 const { createPublisher, QUEUES }   = require('@xcg/queue');
 const { startHealthServer }         = require('@xcg/common/src/healthServer');
-const IORedis                       = require('ioredis');
+const { createRedisClient }         = require('@xcg/common/src/redisFactory');
+const { registerShutdown, runMain } = require('@xcg/common/src/shutdown');
 const mongoose                      = require('mongoose');
 const BlockchainListener            = require('./listener');
+const { LeaderElection }            = require('./leaderElection');
+
+
+
 
 const logger = createLogger('blockchain-listener');
 
@@ -44,14 +49,12 @@ async function main() {
   // 2. Connect to MongoDB
   await connectDB(config.db.uri, logger);
 
-  // 3. Connect to Redis
-  const redis = new IORedis(config.redis.url, {
-    maxRetriesPerRequest: null, // Required for BullMQ
-    lazyConnect: false,
-  });
+  // 3. Connect to Redis (Gap 5: Sentinel/Cluster-aware via REDIS_MODE env)
+  const redis = createRedisClient({ logger });
   redis.on('error', (err) => {
     logger.error('BlockchainListener: Redis error', { error: err.message });
   });
+
 
   // Health check server (internal only — port 3092)
   startHealthServer({ port: 3092, service: 'blockchain-listener', mongoose, redis, logger });
@@ -88,30 +91,40 @@ async function main() {
     logger,
   });
 
-  await listener.start();
+  // Gap 1 fix: Leader election — only ONE instance polls TronGrid at any time.
+  //
+  // If multiple replicas are deployed (rolling deploy, PM2 cluster, k8s HPA),
+  // the elected leader polls blocks; standby replicas wait silently.
+  // On leader crash, the Redis lock TTL expires (30s max) and a standby takes over.
+  // On graceful shutdown, the lock is released immediately for sub-5s failover.
+  //
+  // FAIL-OPEN: If Redis is unavailable, ALL instances start polling.
+  // The matching engine's seen-set deduplication prevents double-credit in this case.
+  const leader = new LeaderElection({ redis, logger });
 
-  // 7. Graceful shutdown
-  async function shutdown(signal) {
-    logger.info(`BlockchainListener: received ${signal} — shutting down`);
-    listener.stop();
-    await redis.quit();
-    process.exit(0);
-  }
-
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('SIGINT',  () => shutdown('SIGINT'));
-
-  process.on('uncaughtException', (err) => {
-    logger.error('BlockchainListener: uncaught exception', { error: err.message, stack: err.stack });
-    process.exit(1);
+  leader.on('elected', async () => {
+    logger.info('BlockchainListener: this instance is the leader — starting polling loop');
+    await listener.start();
   });
-  process.on('unhandledRejection', (reason) => {
-    logger.error('BlockchainListener: unhandled rejection', { reason: String(reason) });
-    process.exit(1);
+
+  leader.on('deposed', () => {
+    logger.info('BlockchainListener: lost leadership — stopping polling loop (standby mode)');
+    listener.stop();
+  });
+
+  leader.start();
+
+
+  registerShutdown({
+    logger,
+    service: 'blockchain-listener',
+    cleanup: async () => {
+      listener.stop();
+      await leader.stop(); // Release leader lock — standby takes over immediately
+      await redis.quit();
+    },
   });
 }
 
-main().catch((err) => {
-  console.error('BlockchainListener: fatal startup error', err.message);
-  process.exit(1);
-});
+runMain(main, { logger, service: 'blockchain-listener' });
+

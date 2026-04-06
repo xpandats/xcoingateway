@@ -31,11 +31,17 @@ const disputeSchema = new mongoose.Schema({
   merchantDeadline:    { type: Date,   default: null },
 
   // Escalation tracking (set when support escalates to admin review)
-  escalatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
-  escalatedAt: { type: Date, default: null },
+  escalatedBy:     { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  escalatedAt:     { type: Date, default: null },
+  escalatedReason: { type: String, default: null },
 
   // Notes history (append-only — each entry has timestamp + actor)
-  notes: { type: String, default: '' },
+  notes: [{
+    text:       { type: String, required: true },
+    addedBy:    { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    addedAt:    { type: Date, default: Date.now },
+    isInternal: { type: Boolean, default: false },  // Admin-only notes not shown to merchant
+  }],
 
   // CRITICAL: Ledger hold tracking
   // When a dispute is opened, funds move from merchant_receivable → dispute_hold
@@ -50,6 +56,7 @@ const disputeSchema = new mongoose.Schema({
   resolvedAt:   { type: Date,   default: null },
   refundTxHash: { type: String, default: null },
   refundAmount: { type: Number, default: 0 },
+  refundId:     { type: mongoose.Schema.Types.ObjectId, ref: 'Refund', default: null },
 }, {
   timestamps: true,
   collection: 'disputes',

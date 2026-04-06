@@ -29,8 +29,9 @@ const { confirmCriticalAction }= require('../middleware/confirmCriticalAction');
 
 const {
   listUsers, getUser, createUser, updateUser,
-  changeUserRole, lockUser, unlockUser, deactivateUser, forceLogout,
+  changeUserRole, lockUser, unlockUser, deactivateUser, forceLogout, revokeToken,
 } = require('../controllers/userController');
+
 
 // Standard admin 4-layer security
 const adminAuth      = [authenticate, authorize('admin'), require2FA, adminIpWhitelist()];
@@ -78,6 +79,15 @@ router.delete('/:id',
   superAdminAuth,
   confirmCriticalAction,
   asyncHandler(deactivateUser),
+);
+
+// ─── Emergency Token Revocation — super_admin only + TOTP ────────────────────
+// Blocklists a specific JWT jti in Redis so the token is immediately invalid
+// even within its 15-minute access token lifetime. Use in confirmed breach scenarios.
+router.post('/:id/revoke-token',
+  superAdminAuth,
+  confirmCriticalAction,
+  asyncHandler(revokeToken),
 );
 
 module.exports = router;

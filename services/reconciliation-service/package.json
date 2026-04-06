@@ -6,13 +6,27 @@
   "private": true,
   "scripts": {
     "start": "node src/server.js",
-    "dev": "node --watch src/server.js"
+    "dev": "node --watch src/server.js",
+    "test": "jest --testEnvironment=node --detectOpenHandles --forceExit",
+    "test:coverage": "jest --coverage --testEnvironment=node --detectOpenHandles --forceExit"
+  },
+  "jest": {
+    "testMatch": ["**/tests/**/*.test.js"],
+    "verbose": true,
+    "testTimeout": 10000
   },
   "dependencies": {
     "@xcg/common": "*",
     "@xcg/database": "*",
     "@xcg/logger": "*",
     "@xcg/queue": "*",
-    "@xcg/tron": "*"
+    "@xcg/tron": "*",
+    "dotenv": "^16.0.0",
+    "ioredis": "^5.3.0",
+    "mongoose": "^7.0.0",
+    "uuid": "^9.0.0"
+  },
+  "devDependencies": {
+    "jest": "^30.3.0"
   }
 }

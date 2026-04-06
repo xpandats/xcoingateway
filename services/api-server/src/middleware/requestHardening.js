@@ -94,7 +94,10 @@ function requestHardening(req, res, next) {
 
   // ── 1. Blocked user agents (known attack tools) ───────────────────────────
   if (BLOCKED_UA_PATTERNS.some((p) => p.test(ua))) {
-    return block(res, req, 'blocked_user_agent', ua.substring(0, 100));
+    logger.warn('WAF: scanner user-agent blocked', { ua: ua.substring(0, 100), ip: req.ip });
+    return res.status(HttpStatus.FORBIDDEN).json(
+      response.error('REQUEST_BLOCKED', 'Access denied'),
+    );
   }
 
   // ── 2. Path traversal ─────────────────────────────────────────────────────

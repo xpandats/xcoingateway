@@ -647,7 +647,7 @@ async function openDispute(req, res) {
   const data = validate(openDisputeSchema, req.body);
   const merchant = await getMerchantForUser(req.user._id);
 
-  // Find the invoice
+  // Find the invoice — must belong to THIS merchant
   const invoice = await Invoice.findOne({
     invoiceId:  data.invoiceId,
     merchantId: new mongoose.Types.ObjectId(String(merchant._id)),
@@ -658,7 +658,7 @@ async function openDispute(req, res) {
     throw AppError.conflict('Can only raise a dispute on a confirmed/successful invoice');
   }
 
-  // Check for existing open dispute
+  // Check for existing open dispute (idempotency)
   const existingDispute = await Dispute.findOne({
     invoiceId: invoice._id,
     status:    { $nin: ['resolved_refund', 'resolved_no_refund', 'closed'] },
@@ -667,17 +667,83 @@ async function openDispute(req, res) {
     throw AppError.conflict('An active dispute already exists for this invoice');
   }
 
-  const dispute = await Dispute.create({
-    disputeId:  `dsp_${uuidv4().replace(/-/g, '').slice(0, 16)}`,
-    merchantId: merchant._id,
-    invoiceId:  invoice._id,
-    status:     'open',
-    reason:     data.reason,
-    evidence:   data.evidence || '',
-    openedBy:   req.user._id,
-    openedAt:   new Date(),
-    deadline:   new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7-day response deadline
-  });
+  // SECURITY: Dispute hold amount = invoice net amount (what merchant received)
+  const disputeAmount = invoice.netAmount || invoice.baseAmount;
+
+  // CRITICAL: Check merchant has sufficient receivable balance for fund freeze
+  const balResult = await LedgerEntry.aggregate([
+    { $match: { merchantId: new mongoose.Types.ObjectId(String(merchant._id)), account: 'merchant_receivable' } },
+    { $group: {
+      _id:    null,
+      net:    { $sum: { $cond: [{ $eq: ['$type', 'credit'] }, '$amount', { $multiply: ['$amount', -1] }] } },
+    } },
+  ]);
+  const merchantBalance = balResult[0]?.net || 0;
+  if (merchantBalance < disputeAmount) {
+    throw AppError.conflict('Insufficient receivable balance to freeze for dispute hold');
+  }
+
+  // ATOMIC: freeze funds + create dispute in one MongoDB transaction
+  // Without this, merchant could withdraw funds while dispute is open
+  const session = await mongoose.startSession();
+  let dispute;
+  try {
+    await session.withTransaction(async () => {
+      const disputeId = `dsp_${uuidv4().replace(/-/g, '').slice(0, 16)}`;
+      const holdId    = `led_${uuidv4().replace(/-/g, '')}`;
+      const debitId   = `led_${uuidv4().replace(/-/g, '')}`;
+
+      // Double-entry: debit merchant_receivable, credit dispute_hold
+      await LedgerEntry.create([
+        {
+          entryId:            debitId,
+          account:            'merchant_receivable',
+          type:               'debit',
+          amount:             disputeAmount,
+          currency:           'USDT',
+          merchantId:         merchant._id,
+          invoiceId:          invoice._id,
+          counterpartEntryId: holdId,
+          description:        `Dispute hold — ${disputeId}`,
+          idempotencyKey:     `ledger:dispute:open:${disputeId}`,
+          balanceAfter:       0,
+        },
+        {
+          entryId:            holdId,
+          account:            'dispute_hold',
+          type:               'credit',
+          amount:             disputeAmount,
+          currency:           'USDT',
+          merchantId:         merchant._id,
+          invoiceId:          invoice._id,
+          counterpartEntryId: debitId,
+          description:        `Dispute hold credit — ${disputeId}`,
+          idempotencyKey:     `ledger:dispute:hold:${disputeId}`,
+          balanceAfter:       0,
+        },
+      ], { session });
+
+      [dispute] = await Dispute.create([{
+        disputeId,
+        merchantId:        merchant._id,
+        invoiceId:         invoice._id,
+        status:            'opened',          // Matches DISPUTE_STATUS.OPENED enum
+        reason:            data.reason,
+        evidence:          data.evidence ? [data.evidence] : [],  // Schema type is [String]
+        openedBy:          req.user._id,
+        openedAt:          new Date(),
+        merchantDeadline:  new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),  // Field name in schema
+        holdLedgerEntryId: holdId,
+        holdAmount:        disputeAmount,
+        fundsHeld:         true,
+      }], { session });
+    });
+  } catch (err) {
+    logger.error('MerchantPortal: openDispute transaction failed', { error: err.message });
+    throw err;
+  } finally {
+    await session.endSession();
+  }
 
   await AuditLog.create({
     actor:      req.user.userId || String(req.user._id),
@@ -687,7 +753,7 @@ async function openDispute(req, res) {
     ipAddress:  req.ip,
     outcome:    'success',
     timestamp:  new Date(),
-    metadata:   { invoiceId: data.invoiceId, reason: data.reason },
+    metadata:   { invoiceId: data.invoiceId, reason: data.reason, holdAmount: disputeAmount },
   });
 
   res.status(201).json({ success: true, data: { dispute } });
@@ -703,7 +769,7 @@ async function respondToDispute(req, res) {
   });
 
   if (!dispute) throw AppError.notFound('Dispute not found');
-  if (['resolved_refund', 'resolved_no_refund', 'closed'].includes(dispute.status)) {
+  if (dispute.status === 'resolved_refund' || dispute.status === 'resolved_no_refund' || dispute.status === 'closed') {
     throw AppError.conflict('Dispute is already resolved', ErrorCodes.DISPUTE_ALREADY_RESOLVED);
   }
   if (dispute.deadline && new Date() > dispute.deadline) {

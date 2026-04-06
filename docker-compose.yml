@@ -1,0 +1,387 @@
+# ============================================================
+# XCOINGATEWAY — PRODUCTION DOCKER COMPOSE
+# ============================================================
+#
+# ARCHITECTURE ZONES:
+#   Network: xcg-public    → Zone 1 (Nginx reverse proxy)
+#   Network: xcg-internal  → Zone 2 (Application services)
+#   Network: xcg-vault     → Zone 3 (Signing service — maximum isolation)
+#   Network: xcg-data      → Zone 4 (MongoDB + Redis — no direct external access)
+#
+# USAGE:
+#   Development:  docker compose up -d
+#   Production:   docker compose -f docker-compose.yml up -d
+#   Logs:         docker compose logs -f xcg-api-server
+#   Health:       curl http://localhost:3090/internal/health/ready
+#
+# REQUIRED FILES:
+#   .env.local       — copy from .env.example and fill in all CHANGE_ME values
+#   config/nginx.conf — created alongside this file
+#
+# SECURITY:
+#   - signing-service is on xcg-vault network (isolated from public)
+#   - Redis and MongoDB only accessible from xcg-data network
+#   - Nginx is the ONLY internet-facing container
+#   - Health check endpoints are internal-only (not exposed to public)
+# ============================================================
+
+services:
+
+  # ─── Zone 1: Nginx Reverse Proxy (Public-Facing) ──────────────────────────
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: xcg-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./config/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./config/ssl:/etc/nginx/ssl:ro    # TLS certs — mount from host
+      - /var/log/xcg/nginx:/var/log/nginx
+    networks:
+      - xcg-public
+      - xcg-internal    # needs access to api-server upstream
+    depends_on:
+      xcg-api-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:80/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ─── Zone 2: API Server ───────────────────────────────────────────────────
+
+  xcg-api-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: xcg-api-server
+    restart: unless-stopped
+    env_file: .env.local
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+    expose:
+      - "3000"     # App port (proxied by Nginx)
+      - "3090"     # Health check port
+    networks:
+      - xcg-internal
+      - xcg-data
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3090/internal/health/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+
+  # ─── Zone 2: Blockchain Listener ──────────────────────────────────────────
+
+  xcg-blockchain-listener:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: xcg-blockchain-listener
+    restart: unless-stopped
+    command: ["node", "services/blockchain-listener/src/server.js"]
+    env_file: .env.local
+    environment:
+      - NODE_ENV=production
+    expose:
+      - "3092"
+    networks:
+      - xcg-internal
+      - xcg-data
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3092/internal/health/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
+
+  # ─── Zone 2: Matching Engine ──────────────────────────────────────────────
+
+  xcg-matching-engine:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: xcg-matching-engine
+    restart: unless-stopped
+    command: ["node", "services/matching-engine/src/server.js"]
+    env_file: .env.local
+    environment:
+      - NODE_ENV=production
+    expose:
+      - "3093"
+    networks:
+      - xcg-internal
+      - xcg-data
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3093/internal/health/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
+
+  # ─── Zone 2: Withdrawal Engine ────────────────────────────────────────────
+
+  xcg-withdrawal-engine:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: xcg-withdrawal-engine
+    restart: unless-stopped
+    command: ["node", "services/withdrawal-engine/src/server.js"]
+    env_file: .env.local
+    environment:
+      - NODE_ENV=production
+    expose:
+      - "3094"
+    networks:
+      - xcg-internal
+      - xcg-data
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3094/internal/health/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
+
+  # ─── Zone 2: Notification Service ─────────────────────────────────────────
+
+  xcg-notification-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: xcg-notification-service
+    restart: unless-stopped
+    command: ["node", "services/notification-service/src/server.js"]
+    env_file: .env.local
+    environment:
+      - NODE_ENV=production
+    expose:
+      - "3095"
+    networks:
+      - xcg-internal
+      - xcg-data
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3095/internal/health/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
+
+  # ─── Zone 2: Reconciliation Service ───────────────────────────────────────
+
+  xcg-reconciliation-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: xcg-reconciliation-service
+    restart: unless-stopped
+    command: ["node", "services/reconciliation-service/src/server.js"]
+    env_file: .env.local
+    environment:
+      - NODE_ENV=production
+    expose:
+      - "3096"
+    networks:
+      - xcg-internal
+      - xcg-data
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3096/internal/health/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s    # reconciler needs more startup time
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
+
+  # ─── Zone 3: Signing Service (MAXIMUM ISOLATION) ──────────────────────────
+  # SECURITY:
+  #   - On xcg-vault + xcg-data networks ONLY (no xcg-internal, no xcg-public)
+  #   - Cannot reach Nginx, API server, or any Zone 2 service directly
+  #   - Communicates ONLY via Redis queues (xcg-data network)
+  #   - Private keys never leave this container
+
+  xcg-signing-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: xcg-signing-service
+    restart: unless-stopped
+    command: ["node", "services/signing-service/src/server.js"]
+    env_file: .env.local
+    environment:
+      - NODE_ENV=production
+      # MASTER_ENCRYPTION_KEY must be injected securely:
+      #   - Docker Secrets, Vault, or AWS SSM Parameter Store
+      #   - NEVER in .env.local for production
+    expose:
+      - "3097"
+    networks:
+      - xcg-vault
+      - xcg-data       # Redis queue access only
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3097/internal/health/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.25"
+
+  # ─── Zone 4: MongoDB ──────────────────────────────────────────────────────
+
+  mongodb:
+    image: mongo:7.0
+    container_name: xcg-mongodb
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-xcg_admin}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-change_me_in_production}
+    volumes:
+      - xcg-mongo-data:/data/db
+      - xcg-mongo-config:/data/configdb
+    expose:
+      - "27017"
+    networks:
+      - xcg-data
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "2.0"
+    # PRODUCTION: Use MongoDB Atlas or a 3-node replica set
+    # command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+
+  # ─── Zone 4: Redis ────────────────────────────────────────────────────────
+
+  redis:
+    image: redis:7-alpine
+    container_name: xcg-redis
+    restart: unless-stopped
+    command: >
+      redis-server
+        --maxmemory 256mb
+        --maxmemory-policy allkeys-lru
+        --requirepass ${REDIS_PASSWORD:-}
+        --appendonly yes
+        --appendfsync everysec
+    volumes:
+      - xcg-redis-data:/data
+    expose:
+      - "6379"
+    networks:
+      - xcg-data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 300M
+          cpus: "0.5"
+
+# ─── Networks ──────────────────────────────────────────────────────────────────
+# Network isolation enforces the 4-zone security architecture:
+#   xcg-public:   Nginx ↔ internet
+#   xcg-internal: Nginx ↔ application services
+#   xcg-vault:    signing-service (isolated from all app services)
+#   xcg-data:     all services ↔ MongoDB + Redis (no external access)
+
+networks:
+  xcg-public:
+    driver: bridge
+  xcg-internal:
+    driver: bridge
+    internal: true       # No external access
+  xcg-vault:
+    driver: bridge
+    internal: true       # Maximum isolation
+  xcg-data:
+    driver: bridge
+    internal: true       # No external access
+
+# ─── Volumes ───────────────────────────────────────────────────────────────────
+
+volumes:
+  xcg-mongo-data:
+  xcg-mongo-config:
+  xcg-redis-data:

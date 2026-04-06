@@ -17,7 +17,7 @@
 
 const mongoose   = require('mongoose');
 const { v4: uuidv4 } = require('uuid');
-const { Invoice, Transaction, LedgerEntry } = require('@xcg/database');
+const { Invoice, Transaction, LedgerEntry, MerchantBalance } = require('@xcg/database');
 const { money }  = require('@xcg/common');
 const { INVOICE_STATUS, TX_STATUS } = require('@xcg/common').constants;
 const FraudEngine = require('@xcg/common/src/fraudEngine');
@@ -289,6 +289,14 @@ class MatchingEngine {
 
         // Calculate running balances BEFORE insert (for balanceAfter field accuracy)
         // This allows reconciliation tools to verify each entry independently
+        // M1 FIX: hot_wallet_incoming also needs a real running balance, not just receivedAmt.
+        // Both aggregates run within the session (snapshot isolation) for consistency.
+        const [hotWalletBalance] = await LedgerEntry.aggregate([
+          { $match: { account: 'hot_wallet_incoming' } },
+          { $group: { _id: null, net: { $sum: { $cond: [{ $eq: ['$type', 'debit'] }, '$amount', { $multiply: ['$amount', -1] }] } } } },
+        ]).session(session);
+        const hotWalletPriorBalance = hotWalletBalance?.net || 0;
+
         const [merchantBalance] = await LedgerEntry.aggregate([
           { $match: { merchantId: invoice.merchantId, account: 'merchant_receivable' } },
           { $group: { _id: null, net: { $sum: { $cond: [{ $eq: ['$type', 'credit'] }, '$amount', { $multiply: ['$amount', -1] }] } } } },
@@ -312,7 +320,7 @@ class MatchingEngine {
             counterpartEntryId: creditId,
             description:        `On-chain receipt — ${invoice.invoiceId} (${txData.txHash.slice(0,12)}...)`,
             idempotencyKey:     `ledger:incoming:${txData.txHash}`,
-            balanceAfter:       receivedAmt, // hot_wallet increases by received amount
+            balanceAfter:       money.round(hotWalletPriorBalance + receivedAmt, 6), // M1 FIX: real running balance
           },
           // CREDIT: net amount owed to merchant
           {
@@ -343,6 +351,17 @@ class MatchingEngine {
             balanceAfter:       platformFee, // Simplified: use per-entry amount for fee account
           },
         ], { session });
+
+        // ── MerchantBalance: Atomic O(1) cache update ─────────────────────────
+        // This keeps the cached MerchantBalance in sync with ledger entries.
+        // The ledger is still the authoritative source; this is a fast cache
+        // that reconciliation verifies periodically.
+        await MerchantBalance.incrementBalance(invoice.merchantId, {
+          availableBalance: netAmount,
+          totalReceived:    receivedAmt,
+          totalFees:        platformFee,
+          invoiceCount:     1,
+        }, session);
       });
 
       this.logger.info('MatchingEngine: payment CONFIRMED', {

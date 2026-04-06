@@ -1,0 +1,10 @@
+{
+  "name": "@xcg/cache",
+  "version": "0.1.0",
+  "private": true,
+  "main": "src/index.js",
+  "description": "Shared Redis cache utilities — stampede protection, slot cache, wallet cache, sysconfig cache",
+  "dependencies": {
+    "@xcg/logger": "*"
+  }
+}

@@ -6,9 +6,21 @@
   "private": true,
   "scripts": {
     "start": "node src/server.js",
-    "dev": "node --watch src/server.js"
+    "dev": "node --watch src/server.js",
+    "test": "jest --testEnvironment=node --detectOpenHandles --forceExit",
+    "test:coverage": "jest --coverage --testEnvironment=node --detectOpenHandles --forceExit"
+  },
+  "jest": {
+    "testMatch": ["**/tests/**/*.test.js"],
+    "testEnvironment": "node",
+    "testTimeout": 30000,
+    "verbose": true
+  },
+  "devDependencies": {
+    "jest": "^30.3.0"
   },
   "dependencies": {
+    "@xcg/cache": "*",
     "@xcg/common": "*",
     "@xcg/database": "*",
     "@xcg/logger": "*",

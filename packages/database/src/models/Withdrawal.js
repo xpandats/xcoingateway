@@ -5,6 +5,9 @@
  *
  * Withdrawal — Merchant USDT payout requests.
  * High-value withdrawals require admin approval before signing.
+ *
+ * IMMUTABILITY: Once status is 'completed' or 'failed', core financial fields
+ * (amount, fee, netAmount, toAddress, fromAddress, txHash) are permanently frozen.
  */
 
 const mongoose = require('mongoose');
@@ -18,8 +21,16 @@ const withdrawalSchema = new mongoose.Schema({
   netAmount: { type: Number, required: true },
   currency: { type: String, default: 'USDT' },
   network: { type: String, default: 'tron' },
-  toAddress: { type: String, required: true },
+  toAddress: {
+    type: String,
+    required: true,
+    validate: {
+      validator: (v) => /^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(v),
+      message: 'toAddress must be a valid TRC20 address (starts with T, 34 chars)',
+    },
+  },
   fromWalletId: { type: mongoose.Schema.Types.ObjectId, ref: 'Wallet', default: null },
+  fromAddress:  { type: String, default: null },  // Our hot wallet address at broadcast time
 
   status: {
     type: String,
@@ -48,6 +59,9 @@ const withdrawalSchema = new mongoose.Schema({
   lastError: { type: String, default: null },   // Internal only — never exposed via API
   idempotencyKey: { type: String, sparse: true, unique: true }, // Prevent duplicate withdrawals
 
+  // Gas tracking
+  gasFeeRecordId: { type: mongoose.Schema.Types.ObjectId, ref: 'GasFeeRecord', default: null },
+
   requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
 }, {
   timestamps: true,
@@ -56,6 +70,30 @@ const withdrawalSchema = new mongoose.Schema({
 });
 
 withdrawalSchema.index({ merchantId: 1, status: 1, createdAt: -1 });
+
+// ─── IMMUTABILITY — protect completed/failed financial records ──────────────
+// Core financial fields CANNOT be changed once withdrawal is settled.
+const FROZEN_FIELDS = new Set(['amount', 'fee', 'netAmount', 'toAddress', 'fromAddress', 'txHash', 'currency', 'network']);
+const FINAL_STATUSES = new Set(['completed', 'failed']);
+
+withdrawalSchema.pre('findOneAndUpdate', function (next) {
+  this.model.findOne(this.getQuery(), { status: 1 }).lean().then((doc) => {
+    if (doc && FINAL_STATUSES.has(doc.status)) {
+      const update = this.getUpdate() || {};
+      const setKeys = Object.keys(update.$set || {});
+      const frozen = setKeys.filter((k) => FROZEN_FIELDS.has(k));
+      if (frozen.length > 0) {
+        return next(new Error(`SECURITY: Withdrawal in '${doc.status}' state — cannot modify: ${frozen.join(', ')}`));
+      }
+    }
+    next();
+  }).catch(next);
+});
+
+withdrawalSchema.pre('deleteOne',         function (next) { next(new Error('SECURITY: Withdrawal records cannot be deleted')); });
+withdrawalSchema.pre('deleteMany',        function (next) { next(new Error('SECURITY: Withdrawal records cannot be deleted')); });
+withdrawalSchema.pre('findOneAndDelete',  function (next) { next(new Error('SECURITY: Withdrawal records cannot be deleted')); });
+withdrawalSchema.pre('findOneAndReplace', function (next) { next(new Error('SECURITY: Withdrawal records cannot be deleted')); });
 
 // External-safe: hides internal retry error details
 withdrawalSchema.methods.toSafeJSON = function () {

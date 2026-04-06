@@ -8,6 +8,13 @@
  *
  * SECURITY: This is a defense-in-depth layer. Even if an attacker
  * compromises admin credentials, they can't use them from a non-whitelisted IP.
+ *
+ * GAP 6 FIX: Previous version used `throw AppError.forbidden()` inside a
+ * synchronous Express middleware closure. Express does NOT catch synchronous
+ * throws inside middleware returned by a factory function — the throw bubbles
+ * past Express's error handling and hits the unhandled exception logger,
+ * resulting in a 500 (Internal Server Error) instead of the intended 403.
+ * Fix: Use `return next(AppError.forbidden(...))` for correct error propagation.
  */
 
 const { AppError } = require('@xcg/common');
@@ -30,7 +37,7 @@ function adminIpWhitelist(whitelist = null) {
       return next();
     }
 
-    const clientIp = req.ip;
+    const clientIp = req.ip || '';
 
     // Normalize IPv6-mapped IPv4 (::ffff:127.0.0.1 → 127.0.0.1)
     const normalizedIp = clientIp.replace(/^::ffff:/, '');
@@ -42,15 +49,19 @@ function adminIpWhitelist(whitelist = null) {
 
     if (!isAllowed) {
       logger.warn('Admin access denied — IP not whitelisted', {
-        requestId: req.requestId,
-        ip: clientIp,
+        requestId:   req.requestId,
+        ip:          clientIp,
         normalizedIp,
-        path: req.path,
-        whitelist: allowedIps,
+        path:        req.path,
+        // Do NOT log the allowedIps list in production — reveals security config to log aggregators
+        whitelistConfigured: allowedIps.length > 0,
       });
 
-      // Intentionally vague error (don't reveal that IP whitelisting exists)
-      throw AppError.forbidden('Access denied');
+      // GAP 6 FIX: Must use next(err) — throwing inside middleware returned by a factory
+      // bypasses Express error handling. The throw propagated to Node's uncaught exception
+      // handler and was logged as a 500 instead of being routed to error middleware as a 403.
+      // Intentionally vague error message (don't reveal IP whitelisting exists to caller).
+      return next(AppError.forbidden('Access denied'));
     }
 
     next();

@@ -10,6 +10,10 @@ const webhookDeliverySchema = new mongoose.Schema({
   payload: { type: mongoose.Schema.Types.Mixed, required: true },
   signature: { type: String, required: true },
 
+  // Resource reference — which invoice/withdrawal/dispute triggered this webhook
+  resourceType: { type: String, enum: ['invoice', 'withdrawal', 'dispute', 'refund'], default: null },
+  resourceId:   { type: mongoose.Schema.Types.ObjectId, default: null, index: true },
+
   status: {
     type: String,
     enum: Object.values(WEBHOOK_DELIVERY_STATUS),
@@ -28,7 +32,9 @@ const webhookDeliverySchema = new mongoose.Schema({
 }, {
   timestamps: true,
   collection: 'webhook_deliveries',
+  strict: true, // Delivery records: never accept unknown injected fields
 });
+
 
 webhookDeliverySchema.index({ status: 1, nextRetryAt: 1 });
 webhookDeliverySchema.index({ merchantId: 1, createdAt: -1 });

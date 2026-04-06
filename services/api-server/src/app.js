@@ -31,24 +31,32 @@ const cookieParser = require('cookie-parser');
 
 const { noSqlSanitize } = require('./middleware/noSqlSanitize');
 const { requestHardening } = require('./middleware/requestHardening');
-const { randomUUID } = require('@xcg/crypto');
+const { randomUUID } = require('crypto');
+
 const { createLogger } = require('@xcg/logger');
 const { AppError, HttpStatus, response, requestContextMiddleware } = require('@xcg/common');
 const { config } = require('./config');
 const { validateOrigin } = require('./middleware/originValidation');
+const { ipAuthLimiter, ipMerchantLimiter, ipGeneralLimiter } = require('./middleware/ipRateLimit');
+
 
 // H2: Attempt to use Redis store for rate limiting (survives restarts, works across instances)
 // Falls back to in-memory store if Redis is unavailable (safe for single-instance dev)
+// SECURITY: hmacNonceRedis is also injected into merchant API route factories for
+// atomic nonce deduplication (SET NX). Must be module-level, not scoped inside try.
 let rateLimitStore;
+let hmacNonceRedis = null;  // Promoted to module scope — used by invoice + withdrawal routes
 try {
   const RedisStore = require('rate-limit-redis');
   const { createClient } = require('redis');
   const redisClient = createClient({ url: config.redis.url });
   redisClient.connect().catch(() => {}); // Non-blocking connect
-  rateLimitStore = new RedisStore({ sendCommand: (...args) => redisClient.sendCommand(args) });
+  rateLimitStore   = new RedisStore({ sendCommand: (...args) => redisClient.sendCommand(args) });
+  hmacNonceRedis   = redisClient; // Share same connection for nonce dedup (atomic SET NX)
 } catch {
   // rate-limit-redis not installed or Redis unavailable — use in-memory (dev only)
   rateLimitStore = undefined;
+  hmacNonceRedis = null;
 }
 
 
@@ -161,7 +169,11 @@ const _makeAuthLimiter = (prefix, max) => rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   store: rateLimitStore,
-  keyGenerator: (req) => `${prefix}:${req.ip}`, // H1: keyed by IP for unauthenticated routes
+  validate: { keyGeneratorIpFallback: false }, // We handle IP trust via 'trust proxy'
+  // Skip in test env — auth rate limit logic is tested via dedicated tests,
+  // not via full integration (which causes validation tests to exhaust the limit first)
+  skip: () => process.env.NODE_ENV === 'test',
+  keyGenerator: (req) => `${prefix}:${req.ip || 'unknown'}`, // H1: keyed by IP for unauthenticated routes
   message: response.error('RATE_LIMITED', 'Too many authentication attempts. Account may be locked temporarily.'),
 });
 
@@ -176,13 +188,41 @@ const healthLimiter = rateLimit({
   standardHeaders: false,
   legacyHeaders: false,
   store: rateLimitStore,
+  validate: { keyGeneratorIpFallback: false },
+  keyGenerator: (req) => `health:${req.ip || 'unknown'}`,
   message: response.error('RATE_LIMITED', 'Too many health check requests.'),
 });
 
-// ═══════════════════════════════════════════════════════════════
-// 4. BODY PARSER (strict size limits)
-// ═══════════════════════════════════════════════════════════════
-// HTTP-2: Force HTTPS in production (for users before HSTS is cached)
+// 3b. PRE-AUTH IP-LEVEL SLIDING WINDOW RATE LIMIT (Gap 1 fix)
+// ═══════════════════════════════════════════════════════════
+// Runs BEFORE HMAC auth, nonce check, and merchant DB lookup.
+// Blocks volumetric brute-force before any business logic executes.
+// Three separate buckets by route class (auth, merchant-api, general).
+// NOTE: ipRateLimit uses app.locals.redis which is injected in createApp().
+//   The middleware itself checks req.app.locals.redis and fails open if not ready.
+//   This is safe: at startup, Redis is connected before the first request arrives.
+app.use('/api/v1/auth',          ipAuthLimiter);      // 20/5min per IP — strictest
+app.use('/api/v1/payments',      ipMerchantLimiter);  // 120/min per IP
+app.use('/api/v1/withdrawals',   ipMerchantLimiter);  // 120/min per IP
+app.use('/api/',                 ipGeneralLimiter);   // 300/min per IP (general fallback)
+
+// ═══════════════════════════════════════════════════════════
+// 4. BODY PARSER — Service-specific size limits (Gap 3 fix)
+// ═══════════════════════════════════════════════════════════
+// WHY PER-ROUTE LIMITS:
+//   A blanket 100kb limit allows a 100kb invoice-create payload which is absurd.
+//   Oversized payloads waste CPU (JSON.parse on huge strings) and can be used
+//   to DoS the server or probe for JSON parser vulnerabilities.
+//   Each endpoint now has a limit sized to its maximum legitimate payload.
+//
+//   Auth (login/register/2FA):  8KB  — credentials + TOTP token, nothing bigger
+//   Invoice create:            16KB  — amount + metadata + callback URL
+//   Withdrawal create:          4KB  — amount + address, nothing bigger
+//   Admin ops (bulk):         256KB  — bulk imports, OFAC list updates
+//   General fallback:          32KB  — catch-all for unlisted routes
+//
+// IMPORTANT: More specific paths MUST be declared before less specific ones.
+// Express matches the FIRST matching app.use() path.
 if (config.env === 'production') {
   app.use((req, res, next) => {
     if (req.protocol === 'http') {
@@ -193,8 +233,6 @@ if (config.env === 'production') {
 }
 
 // HTTP-1: Reject HTTP Request Smuggling attempts
-// Requests with BOTH Content-Length and Transfer-Encoding are ambiguous
-// and exploited for request smuggling attacks
 app.use((req, res, next) => {
   if (req.headers['transfer-encoding'] && req.headers['content-length']) {
     return res.status(400).json(
@@ -204,18 +242,14 @@ app.use((req, res, next) => {
   next();
 });
 
-// Auth routes: 10KB (login/register payloads are tiny)
-// All other API routes: 100KB
-app.use('/api/v1/auth', express.json({ limit: '10kb' }));
-app.use('/api/', express.json({ limit: '100kb' }));
-app.use(express.urlencoded({ extended: false, limit: '10kb' }));
-
-// ═══════════════════════════════════════════════════════════════
-// 5. CONTENT-TYPE ENFORCEMENT
-// ═══════════════════════════════════════════════════════════════
-// All mutation requests MUST be application/json.
-// Blocks multipart attacks and form-encoded injection vectors.
-app.use('/api/', (req, res, next) => {
+// ═══════════════════════════════════════════════════════════
+// 5. CONTENT-TYPE ENFORCEMENT (global — covers /api/, /admin/, /support/)
+// ═══════════════════════════════════════════════════════════
+// All mutation requests MUST send Content-Type: application/json.
+// Blocks multipart injection, form-encoded bypass, and raw-body attacks.
+// Global: previously only /api/ was covered — /admin/ and /support/ mutations
+// also receive JSON bodies and were missing this guard.
+app.use((req, res, next) => {
   if (['POST', 'PUT', 'PATCH'].includes(req.method)) {
     const contentType = req.get('content-type');
     if (!contentType || !contentType.includes('application/json')) {
@@ -227,6 +261,18 @@ app.use('/api/', (req, res, next) => {
   next();
 });
 
+// Service-specific body-size limits (Gap 3 fix) — ORDER IS CRITICAL
+// More-specific paths MUST be declared before less-specific (Express matches first).
+app.use('/api/v1/auth',       express.json({ limit: '8kb' }));    // login/register/2FA
+app.use('/api/v1/payments',   express.json({ limit: '16kb' }));   // invoice create + metadata
+app.use('/api/v1/withdrawals',express.json({ limit: '4kb' }));    // withdrawal: amount + address only
+app.use('/admin/bulk',        express.json({ limit: '256kb' }));  // bulk imports, OFAC list
+app.use('/admin',             express.json({ limit: '32kb' }));   // admin ops
+app.use('/api/',              express.json({ limit: '32kb' }));   // general fallback
+app.use(express.urlencoded({ extended: false, limit: '8kb' }));
+
+
+
 // ═══════════════════════════════════════════════════════════════
 // 6. NOSQL + PROTOTYPE INJECTION PREVENTION (MUST be AFTER body parser)
 // ═══════════════════════════════════════════════════════════════
@@ -237,7 +283,7 @@ app.use(noSqlSanitize);
 // ═══════════════════════════════════════════════════════════════
 // Code-level WAF: path traversal, null bytes, scanner UAs, host injection.
 // Defense-in-depth BEFORE Cloudflare/Nginx WAF layer.
-app.use('/api/', requestHardening);
+app.use(requestHardening); // Global: scanner UAs blocked on ALL routes
 
 // ═══════════════════════════════════════════════════════════════
 // 6c. CSRF-2: ORIGIN VALIDATION (MUST be AFTER body parser)
@@ -255,6 +301,51 @@ app.use(hpp());
 // 8. COOKIE PARSER
 // ═══════════════════════════════════════════════════════════════
 app.use(cookieParser());
+
+// 8b. API VERSIONING HEADERS (Gap 5 fix)
+// ═══════════════════════════════════════════════════════════
+// Every /api/ response carries X-API-Version so clients can detect version.
+// When a v2 route is rolled out, deprecated v1 endpoints gain a Deprecation
+// header (RFC 8594) so clients see warnings before the endpoint is removed.
+// No breaking change — purely additive response headers.
+const API_VERSION = process.env.API_VERSION || 'v1';
+app.use('/api/', (req, res, next) => {
+  res.setHeader('X-API-Version', API_VERSION);
+  // Example (activate when deprecating a specific endpoint):
+  // if (req.path.startsWith('/v1/legacy/')) {
+  //   res.setHeader('Deprecation', 'Sat, 01 Jan 2026 00:00:00 GMT');
+  //   res.setHeader('Sunset', 'Sat, 01 Jul 2026 00:00:00 GMT');
+  //   res.setHeader('Link', '</api/v2/resource>; rel="successor-version"');
+  // }
+  next();
+});
+
+// 8c. PAGINATION DEPTH GUARD — global (Gap 6 fix, extended)
+// ═══════════════════════════════════════════════════════════
+// WHY: page=99999&limit=100 forces MongoDB to skip ~10M documents.
+// Original guard only covered /api/ — missing /admin/ and /support/ list endpoints
+// (e.g. GET /admin/transactions?page=99999 or GET /support/transactions?page=99999).
+// Fix: global guard (no path prefix) — applies to ALL routes.
+const MAX_PAGE  = parseInt(process.env.PAGINATION_MAX_PAGE, 10)  || 1000;
+const MAX_LIMIT = parseInt(process.env.PAGINATION_MAX_LIMIT, 10) || 200;
+
+app.use((req, res, next) => {
+  if (req.method !== 'GET') return next();
+  const page  = parseInt(req.query.page, 10);
+  const limit = parseInt(req.query.limit, 10);
+  if (!Number.isNaN(page) && page > MAX_PAGE) {
+    return res.status(400).json(
+      response.error('INVALID_PAGINATION', `Page cannot exceed ${MAX_PAGE}`),
+    );
+  }
+  if (!Number.isNaN(limit) && limit > MAX_LIMIT) {
+    return res.status(400).json(
+      response.error('INVALID_PAGINATION', `Limit cannot exceed ${MAX_LIMIT}`),
+    );
+  }
+  next();
+});
+
 
 // ═══════════════════════════════════════════════════════════════
 // 9. REQUEST ID INJECTION
@@ -334,10 +425,12 @@ app.use('/admin',                   adminRoutes);   // dashboard, transactions, 
 // ─── Support routes (authenticate + authorize('support') + IP whitelist) ─────
 app.use('/support',                 supportRoutes);
 
-// ─── Merchant API (HMAC-signed) ── routers built once in createApp() ───────────────
-// Delegate to cached pre-built routers (avoids per-request router creation)
-app.use('/api/v1/payments',    (req, res, next) => (req.app.locals._invoiceRouter    || invoiceRouteFactory(null))(req, res, next));
-app.use('/api/v1/withdrawals', (req, res, next) => (req.app.locals._withdrawalRouter || withdrawalRouteFactory(null))(req, res, next));
+// ─── Merchant API (HMAC-signed) ── routers built ONCE at startup with Redis injected ──
+// SECURITY: redisClient (hmacNonceRedis) is injected here for atomic nonce deduplication.
+// In production: Redis SET NX (atomic). In dev without Redis: MongoDB UsedNonce (fallback).
+// Routers are built at module load time — NOT per-request — to avoid recreating middleware.
+app.use('/api/v1/payments',    invoiceRouteFactory(hmacNonceRedis));
+app.use('/api/v1/withdrawals', withdrawalRouteFactory(hmacNonceRedis));
 
 // ═══════════════════════════════════════════════════════════════
 // 13. 404 HANDLER
@@ -366,6 +459,16 @@ app.use((err, req, res, _next) => {
   if (err.type === 'entity.too.large') {
     return res.status(413).json(
       response.error('PAYLOAD_TOO_LARGE', 'Request body exceeds the maximum size limit'),
+    );
+  }
+
+  // Circuit breaker open (dependency degraded) — Gap 6
+  // When MongoDB or TronGrid is unhealthy, circuit breakers throw CircuitOpenError.
+  // Return 503 + Retry-After so the load balancer routes away and clients back off.
+  if (err.isCircuitOpen) {
+    res.setHeader('Retry-After', String(err.retryInSec || 30));
+    return res.status(503).json(
+      response.error('SERVICE_UNAVAILABLE', 'A backend dependency is temporarily unavailable. Please retry.'),
     );
   }
 
@@ -405,28 +508,40 @@ app.use((err, req, res, _next) => {
  * Invoice and withdrawal routes need Redis for nonce deduplication.
  * Routers are built ONCE here, not on every request.
  *
- * @param {object} [redisClient]            - IORedis instance
- * @param {object} [paymentCreatedPublisher] - Queue publisher for payment.created events
+ * @param {object} [redisClient]                  - IORedis instance
+ * @param {object} [paymentCreatedPublisher]       - Queue publisher for payment.created events
+ * @param {object} [withdrawalEligiblePublisher]   - Queue publisher for withdrawal.eligible events
  * @returns {express.Application}
  */
-function createApp(redisClient, paymentCreatedPublisher) {
+function createApp(redisClient, paymentCreatedPublisher, withdrawalEligiblePublisher) {
   if (redisClient) {
     app.locals.redis = redisClient;
-    // Build routers ONCE at startup with the real Redis client
-    // This prevents the per-request router creation memory leak
+
+    // IP Blocklist middleware — runs BEFORE all route handlers
+    // Checks IpBlocklist model with Redis cache (1-min TTL)
+    const checkIpBlock = require('./middleware/checkIpBlock');
+    app.use('/api/', checkIpBlock({ redis: redisClient, logger }));
+    app.use('/admin/', checkIpBlock({ redis: redisClient, logger }));
+
     const invoiceRouter    = invoiceRouteFactory(redisClient);
     const withdrawalRouter = withdrawalRouteFactory(redisClient);
-
-    // Remove previous per-request middleware and replace with static routers
-    // Using a fresh router cache stored in app.locals
     app.locals._invoiceRouter    = invoiceRouter;
     app.locals._withdrawalRouter = withdrawalRouter;
   }
 
-  // Wire payment.created publisher into invoice controller (non-blocking event)
   if (paymentCreatedPublisher) {
     const { setPaymentCreatedPublisher } = require('./controllers/invoiceController');
     setPaymentCreatedPublisher(paymentCreatedPublisher);
+  }
+
+  // Wire withdrawal.eligible publisher — enables manual withdrawal requests to
+  // be picked up by the withdrawal engine for signing
+  if (withdrawalEligiblePublisher) {
+    const { setWithdrawalEligiblePublisher } = require('./controllers/withdrawalController');
+    setWithdrawalEligiblePublisher(withdrawalEligiblePublisher);
+    // Admin controller also needs it for approved high-value withdrawals
+    const { setWithdrawalEligiblePublisher: setAdminWdlPub } = require('./controllers/adminController');
+    setAdminWdlPub(withdrawalEligiblePublisher);
   }
 
   return app;

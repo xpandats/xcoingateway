@@ -109,6 +109,9 @@ class WebhookDeliveryEngine {
       .update(`${timestamp}.${payloadStr}`)
       .digest('hex');
 
+    // Zero the decrypted secret — consistent with merchantApiAuth.js pattern
+    webhookSecret = '';
+
     // Attempt delivery
     let attempt = 1;
     let success = false;
@@ -188,6 +191,13 @@ class WebhookDeliveryEngine {
           invoiceId: data.invoiceId,
           amount:    data.amount,
           expiredAt: data.expiredAt || new Date().toISOString(),
+        };
+      case 'payment.failed':
+      case 'payment.underpaid':
+        return {
+          invoiceId: data.invoiceId,
+          amount:    data.amount,
+          reason:    data.reason || 'unknown',
         };
       case 'withdrawal.completed':
         return {

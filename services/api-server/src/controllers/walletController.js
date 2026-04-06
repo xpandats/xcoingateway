@@ -17,15 +17,11 @@ const { TronAdapter } = require('@xcg/tron');
 
 const logger = require('@xcg/logger').createLogger('wallet-ctrl');
 
-// Lazy-init singletons
-let _walletService, _tronAdapter;
-
-function getWalletService() {
-  if (!_walletService) {
-    _walletService = new WalletService({ logger });
-  }
-  return _walletService;
+// Lazy-init — redis injected per-request (same pattern as merchantController)
+function getWalletService(req) {
+  return new WalletService({ logger, redis: req.app.locals.redis || null });
 }
+
 
 function getTronAdapter() {
   if (!_tronAdapter) {
@@ -55,8 +51,8 @@ const statusSchema = Joi.object({
 async function addWallet(req, res) {
   const data = validate(addWalletSchema, req.body);
 
-  const wallet = await getWalletService().addWallet(data, {
-    userId: req.user._id,
+  const wallet = await getWalletService(req).addWallet(data, {
+    userId: req.user.userId,
     ip:     req.ip,
   });
 
@@ -64,7 +60,7 @@ async function addWallet(req, res) {
 }
 
 async function listWallets(req, res) {
-  const wallets = await getWalletService().listWallets(req.query);
+  const wallets = await getWalletService(req).listWallets(req.query);
   res.json({ success: true, data: { wallets, count: wallets.length } });
 }
 
@@ -78,15 +74,15 @@ async function getWallet(req, res) {
 
 async function setWalletStatus(req, res) {
   const { isActive } = validate(statusSchema, req.body);
-  const wallet = await getWalletService().setWalletStatus(req.params.id, isActive, {
-    userId: req.user._id,
+  const wallet = await getWalletService(req).setWalletStatus(req.params.id, isActive, {
+    userId: req.user.userId,
     ip:     req.ip,
   });
   res.json({ success: true, data: { wallet } });
 }
 
 async function getWalletBalance(req, res) {
-  const balance = await getWalletService().getWalletBalance(req.params.id, getTronAdapter());
+  const balance = await getWalletService(req).getWalletBalance(req.params.id, getTronAdapter());
   res.json({ success: true, data: balance });
 }
 
